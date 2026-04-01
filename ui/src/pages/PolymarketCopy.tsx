@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AgentEnvConfig,
@@ -8,6 +8,7 @@ import type {
   PolymarketCopyPaperTrade,
   PolymarketCopySignalDecisionRecord,
 } from "@paperclipai/shared";
+import type { LucideIcon } from "lucide-react";
 import {
   ActivitySquare,
   ArrowUpRight,
@@ -15,6 +16,7 @@ import {
   KeyRound,
   Radar,
   RefreshCcw,
+  ScrollText,
   ShieldAlert,
   ShieldCheck,
   TimerReset,
@@ -25,7 +27,6 @@ import { Link, useParams } from "@/lib/router";
 import { polymarketCopyApi } from "../api/polymarketCopy";
 import { secretsApi } from "../api/secrets";
 import { EmptyState } from "../components/EmptyState";
-import { MetricCard } from "../components/MetricCard";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { useCompany } from "../context/CompanyContext";
 import { useRouteCompanySync } from "../hooks/useRouteCompanySync";
@@ -61,19 +62,44 @@ const AUTH_KEY_LABELS: Record<PolymarketAuthEnvKey, string> = {
 };
 
 const DESK_SECTIONS = [
-  { id: "overview", label: "Overview" },
-  { id: "desk-status", label: "Desk Status" },
-  { id: "worker-status", label: "Worker Status" },
-  { id: "live-readiness", label: "Live Readiness" },
-  { id: "auth-readiness", label: "Auth Readiness" },
-  { id: "wallets", label: "Wallets" },
-  { id: "signals", label: "Signals" },
-  { id: "paper-trades", label: "Paper Trades" },
-  { id: "risk-blocks", label: "Risk / Blocks" },
-  { id: "audit", label: "Audit" },
+  { id: "overview", label: "Overview", icon: ActivitySquare },
+  { id: "desk-status", label: "Desk Status", icon: BriefcaseBusiness },
+  { id: "workers", label: "Workers", icon: TimerReset },
+  { id: "wallets", label: "Wallets", icon: Wallet },
+  { id: "signals", label: "Signals", icon: TrendingUp },
+  { id: "paper-trades", label: "Paper Trades", icon: ActivitySquare },
+  { id: "risk-blocks", label: "Risk / Blocks", icon: ShieldAlert },
+  { id: "auth-readiness", label: "Auth Readiness", icon: KeyRound },
+  { id: "live-readiness", label: "Live Readiness", icon: Radar },
+  { id: "audit", label: "Audit", icon: ScrollText },
 ] as const;
 
 const EMPTY_SECRET_REF = "__none__";
+const LIGHT_DESK_THEME = {
+  "--background": "210 33% 99%",
+  "--foreground": "222 36% 12%",
+  "--card": "0 0% 100%",
+  "--card-foreground": "222 36% 12%",
+  "--popover": "0 0% 100%",
+  "--popover-foreground": "222 36% 12%",
+  "--primary": "222 44% 16%",
+  "--primary-foreground": "0 0% 100%",
+  "--secondary": "145 44% 93%",
+  "--secondary-foreground": "145 50% 20%",
+  "--muted": "210 24% 96%",
+  "--muted-foreground": "215 16% 40%",
+  "--accent": "210 20% 95%",
+  "--accent-foreground": "222 36% 12%",
+  "--destructive": "0 78% 56%",
+  "--border": "214 20% 88%",
+  "--input": "214 20% 88%",
+  "--ring": "217 32% 22%",
+} as CSSProperties;
+const DESK_SURFACE_CLASS = "rounded-[24px] border border-border/80 bg-white py-0 shadow-[0_18px_40px_rgba(15,23,42,0.05)]";
+const TABLE_SURFACE_CLASS = "overflow-hidden rounded-[22px] border border-border/80 bg-white shadow-[0_12px_30px_rgba(15,23,42,0.05)]";
+const INSET_SURFACE_CLASS = "rounded-[20px] border border-border/70 bg-muted/35";
+
+type DeskSectionId = (typeof DESK_SECTIONS)[number]["id"];
 
 function formatUsd(value: number): string {
   return new Intl.NumberFormat("en-US", {
@@ -104,7 +130,7 @@ function toneForBoolean(
 }
 
 function toneForHealth(health: string): "secondary" | "outline" | "destructive" {
-  if (health === "healthy") return "secondary";
+  if (health === "healthy" || health === "success") return "secondary";
   if (health === "failed") return "destructive";
   return "outline";
 }
@@ -135,22 +161,45 @@ function secretOptionLabel(secret: CompanySecret): string {
   return secret.name;
 }
 
-function SectionMenu({ compact = false }: { compact?: boolean }) {
+function SectionMenu({
+  activeSection,
+  compact = false,
+  onSelect,
+}: {
+  activeSection: DeskSectionId;
+  compact?: boolean;
+  onSelect?: (sectionId: DeskSectionId) => void;
+}) {
   return (
-    <nav className={compact ? "flex gap-2 overflow-x-auto pb-1" : "flex flex-col gap-1"}>
-      {DESK_SECTIONS.map((section) => (
-        <a
-          key={section.id}
-          href={`#${section.id}`}
-          className={
-            compact
-              ? "whitespace-nowrap rounded-full border border-border bg-background px-3 py-1.5 text-sm font-medium text-foreground/80 transition-colors hover:border-foreground/20 hover:text-foreground"
-              : "rounded-xl px-3 py-2 text-sm font-medium text-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
-          }
-        >
-          {section.label}
-        </a>
-      ))}
+    <nav className={compact ? "flex gap-2 overflow-x-auto pb-1" : "flex flex-col gap-1.5"}>
+      {DESK_SECTIONS.map((section) => {
+        const Icon = section.icon;
+        const isActive = section.id === activeSection;
+        return (
+          <a
+            key={section.id}
+            href={`#${section.id}`}
+            aria-current={isActive ? "true" : undefined}
+            onClick={() => onSelect?.(section.id)}
+            className={
+              compact
+                ? `flex items-center gap-2 whitespace-nowrap rounded-full border px-3 py-2 text-sm font-medium transition-colors ${
+                  isActive
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-border bg-white text-muted-foreground hover:border-foreground/20 hover:text-foreground"
+                }`
+                : `flex items-center gap-3 rounded-[16px] border px-3 py-2.5 text-sm transition-colors ${
+                  isActive
+                    ? "border-foreground/10 bg-foreground text-background shadow-[0_10px_24px_rgba(15,23,42,0.12)]"
+                    : "border-transparent text-muted-foreground hover:border-border hover:bg-muted/60 hover:text-foreground"
+                }`
+            }
+          >
+            <Icon className="h-4 w-4 shrink-0" />
+            <span>{section.label}</span>
+          </a>
+        );
+      })}
     </nav>
   );
 }
@@ -162,18 +211,18 @@ function DeskSection({
   children,
   actions,
 }: {
-  id: string;
+  id: DeskSectionId;
   title: string;
   description?: string;
   children: ReactNode;
   actions?: ReactNode;
 }) {
   return (
-    <section id={id} className="scroll-mt-28 space-y-3">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
-          {description && <p className="text-sm text-muted-foreground">{description}</p>}
+    <section id={id} className="scroll-mt-40 space-y-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div className="space-y-1">
+          <h2 className="text-xl font-semibold tracking-tight text-foreground">{title}</h2>
+          {description && <p className="max-w-3xl text-sm leading-6 text-muted-foreground">{description}</p>}
         </div>
         {actions}
       </div>
@@ -182,13 +231,70 @@ function DeskSection({
   );
 }
 
-function OverviewCards({ data }: { data: PolymarketCopyDashboardData }) {
+function HeaderStatusCard({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-      <MetricCard icon={Wallet} value={data.overview.watchedWalletCount} label="Watched Wallets" />
-      <MetricCard icon={TrendingUp} value={data.overview.signalsToday} label="Signals Today" description={`${data.overview.acceptedCount} accepted`} />
-      <MetricCard icon={ActivitySquare} value={data.overview.paperTradesOpen} label="Open Paper Trades" description={`${data.overview.paperTradesClosed} closed`} />
-      <MetricCard icon={ShieldAlert} value={formatUsd(data.overview.realizedPnlUsd)} label="Realized PnL" description={`Unrealized ${formatUsd(data.overview.unrealizedPnlUsd)}`} />
+    <div className="min-w-0 rounded-[18px] border border-border/80 bg-white/95 px-3.5 py-3 shadow-[0_8px_20px_rgba(15,23,42,0.04)]">
+      <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
+      <div className="mt-1.5 min-w-0 text-sm font-semibold text-foreground">{value}</div>
+    </div>
+  );
+}
+
+function OverviewCards({ data }: { data: PolymarketCopyDashboardData }) {
+  const items: Array<{
+    icon: LucideIcon;
+    label: string;
+    value: string | number;
+    description: string;
+  }> = [
+    {
+      icon: Wallet,
+      label: "Watched wallets",
+      value: data.overview.watchedWalletCount,
+      description: "Active source wallets feeding the desk.",
+    },
+    {
+      icon: TrendingUp,
+      label: "Signals today",
+      value: data.overview.signalsToday,
+      description: `${data.overview.acceptedCount} accepted • ${data.overview.blockedCount} blocked`,
+    },
+    {
+      icon: ActivitySquare,
+      label: "Open paper trades",
+      value: data.overview.paperTradesOpen,
+      description: `${data.overview.paperTradesClosed} closed positions so far`,
+    },
+    {
+      icon: ShieldAlert,
+      label: "Realized PnL",
+      value: formatUsd(data.overview.realizedPnlUsd),
+      description: `Unrealized ${formatUsd(data.overview.unrealizedPnlUsd)}`,
+    },
+  ];
+
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {items.map((item) => {
+        const Icon = item.icon;
+        return (
+          <div
+            key={item.label}
+            className="rounded-[20px] border border-border/80 bg-white px-4 py-4 shadow-[0_8px_22px_rgba(15,23,42,0.04)]"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-2xl font-semibold tracking-tight text-foreground">{item.value}</div>
+                <div className="mt-1 text-sm font-medium text-foreground/80">{item.label}</div>
+                <div className="mt-1.5 text-xs leading-5 text-muted-foreground">{item.description}</div>
+              </div>
+              <div className="rounded-full border border-border/80 bg-muted/50 p-2 text-muted-foreground">
+                <Icon className="h-4 w-4" />
+              </div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -203,29 +309,35 @@ function SectionTable({
   rows: Array<Array<ReactNode>>;
 }) {
   if (rows.length === 0) {
-    return <div className="rounded-2xl border border-border bg-background/90 p-6 text-sm text-muted-foreground shadow-sm">{empty}</div>;
+    return (
+      <div className={`${TABLE_SURFACE_CLASS} p-6 text-sm text-muted-foreground`}>
+        {empty}
+      </div>
+    );
   }
 
   return (
-    <div className="overflow-x-auto rounded-2xl border border-border bg-background/90 shadow-sm">
-      <table className="min-w-full text-sm">
-        <thead className="bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
-          <tr>
-            {headers.map((header) => (
-              <th key={header} className="px-3 py-2 font-medium">{header}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, index) => (
-            <tr key={index} className="border-t border-border align-top">
-              {row.map((cell, cellIndex) => (
-                <td key={cellIndex} className="px-3 py-2">{cell}</td>
+    <div className={TABLE_SURFACE_CLASS}>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="bg-muted/70 text-left text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+            <tr>
+              {headers.map((header) => (
+                <th key={header} className="px-4 py-3 font-medium">{header}</th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody className="divide-y divide-border/70">
+            {rows.map((row, index) => (
+              <tr key={index} className={index % 2 === 0 ? "bg-white" : "bg-muted/15"}>
+                {row.map((cell, cellIndex) => (
+                  <td key={cellIndex} className="px-4 py-3 align-top text-foreground/90">{cell}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -267,8 +379,8 @@ function AuthReadinessPanel(props: {
   const readiness = props.data.authReadiness;
 
   return (
-    <Card className="rounded-2xl border-border bg-background/90 shadow-sm">
-      <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+    <Card className={DESK_SURFACE_CLASS}>
+      <CardHeader className="flex flex-col gap-4 border-b border-border/70 pb-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <CardTitle className="flex items-center gap-2 text-base">
             <KeyRound className="h-4 w-4" />
@@ -282,6 +394,7 @@ function AuthReadinessPanel(props: {
           <Button
             variant="outline"
             size="sm"
+            className="border-border/80 bg-white"
             onClick={props.onCheckReadiness}
             disabled={props.isCheckingReadiness}
           >
@@ -290,6 +403,7 @@ function AuthReadinessPanel(props: {
           <Button
             variant="outline"
             size="sm"
+            className="border-border/80 bg-white"
             onClick={props.onDeriveCredentials}
             disabled={props.isDerivingCredentials || !readiness.canDeriveApiCredentials}
           >
@@ -298,13 +412,14 @@ function AuthReadinessPanel(props: {
           <Button
             variant="outline"
             size="sm"
+            className="border-border/80 bg-white"
             onClick={props.onRefreshStatus}
           >
             Refresh Readiness Status
           </Button>
         </div>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-5 p-6">
         <div className="flex flex-wrap gap-2">
           <Badge variant={readiness.paperModeActive ? "secondary" : "outline"}>
             Paper Mode Active: {String(readiness.paperModeActive)}
@@ -323,10 +438,10 @@ function AuthReadinessPanel(props: {
           </Badge>
         </div>
 
-        <div className="rounded-2xl border border-border bg-muted/20 p-4">
+        <div className={`${INSET_SURFACE_CLASS} p-4`}>
           <div className="space-y-1">
-            <div className="font-medium">Store / Rotate Private Key</div>
-            <p className="text-sm text-muted-foreground">
+            <div className="font-medium text-foreground">Store / Rotate Private Key</div>
+            <p className="text-sm leading-6 text-muted-foreground">
               Enter <code>POLYMARKET_PRIVATE_KEY</code> here to store it through the existing Paperclip company secrets system. The next action is <code>Derive API Credentials</code>.
             </p>
           </div>
@@ -341,23 +456,25 @@ function AuthReadinessPanel(props: {
                 value={props.privateKeyDraft}
                 onChange={(event) => props.onPrivateKeyDraftChange(event.target.value)}
                 placeholder="0x..."
+                className="border-border/80 bg-white"
               />
             </div>
             <Button
               variant="outline"
+              className="border-border/80 bg-white"
               onClick={props.onStorePrivateKey}
               disabled={props.isStoringPrivateKey || props.privateKeyDraft.trim().length === 0}
             >
               Store Private Key
             </Button>
           </div>
-          <div className="mt-2 text-xs text-muted-foreground">
+          <div className="mt-2 text-xs leading-5 text-muted-foreground">
             Stored only as a company secret ref. Raw key values are never written into repo files or persisted in page state beyond this input.
           </div>
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[1.05fr_1fr]">
-          <Card className="rounded-2xl border-border shadow-none">
+          <Card className={`${DESK_SURFACE_CLASS} shadow-none`}>
             <CardHeader className="pb-3">
               <CardTitle className="text-base">Readiness Summary</CardTitle>
             </CardHeader>
@@ -384,7 +501,7 @@ function AuthReadinessPanel(props: {
                   {String(readiness.canDeriveApiCredentials)}
                 </Badge>
               </div>
-              <div className="rounded-xl border border-border bg-muted/20 p-3 text-sm text-muted-foreground">
+              <div className={`${INSET_SURFACE_CLASS} p-3 text-sm leading-6 text-muted-foreground`}>
                 {readiness.summary}
               </div>
               {readiness.reasonCodes.length > 0 && (
@@ -395,19 +512,19 @@ function AuthReadinessPanel(props: {
                 </div>
               )}
               {props.statusMessage && (
-                <div className="rounded-xl border border-border p-3 text-sm">
+                <div className="rounded-[18px] border border-border/80 bg-white p-3 text-sm">
                   {props.statusMessage}
                 </div>
               )}
               {props.secretsErrorMessage && (
-                <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                <div className="rounded-[18px] border border-destructive/35 bg-destructive/5 p-3 text-sm text-destructive">
                   {props.secretsErrorMessage}
                 </div>
               )}
             </CardContent>
           </Card>
 
-          <Card className="rounded-2xl border-border shadow-none">
+          <Card className={`${DESK_SURFACE_CLASS} shadow-none`}>
             <CardHeader className="pb-3">
               <CardTitle className="text-base">Secret References</CardTitle>
               <CardDescription>
@@ -421,7 +538,7 @@ function AuthReadinessPanel(props: {
                 const hasCurrentSecretOption = currentSecretId != null
                   && props.availableSecrets.some((secret) => secret.id === currentSecretId);
                 return (
-                  <div key={key} className="rounded-xl border border-border p-3">
+                  <div key={key} className="rounded-[18px] border border-border/80 bg-white p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
                         <div className="font-medium">{AUTH_KEY_LABELS[key]}</div>
@@ -442,7 +559,7 @@ function AuthReadinessPanel(props: {
                         onValueChange={(value) => props.onBindSecret(key, value === EMPTY_SECRET_REF ? null : value)}
                         disabled={props.isUpdatingSecretRef || props.isSecretsLoading || props.secretsErrorMessage != null}
                       >
-                        <SelectTrigger className="w-full sm:w-[320px]">
+                        <SelectTrigger className="w-full border-border/80 bg-white sm:w-[320px]">
                           <SelectValue placeholder="Select a secret ref" />
                         </SelectTrigger>
                         <SelectContent>
@@ -457,7 +574,7 @@ function AuthReadinessPanel(props: {
                           ))}
                         </SelectContent>
                       </Select>
-                      <div className="text-xs text-muted-foreground">
+                      <div className="text-xs leading-5 text-muted-foreground">
                         {status.reasonCode ?? "Config-only structural check passed for this ref."}
                       </div>
                     </div>
@@ -483,12 +600,48 @@ export function PolymarketCopy() {
   const companyLabel = activeCompany?.name ?? "Paperclip Company";
   const companyPrefixLabel = activeCompany?.issuePrefix ?? companyPrefix ?? "desk";
   const [privateKeyDraft, setPrivateKeyDraft] = useState("");
+  const [activeSection, setActiveSection] = useState<DeskSectionId>("overview");
 
   useEffect(() => {
     document.title = activeCompany
       ? `Polymarket Trading Desk · ${activeCompany.name} · Paperclip`
       : "Polymarket Trading Desk · Paperclip";
   }, [activeCompany]);
+
+  useEffect(() => {
+    const syncActiveSection = () => {
+      let nextSection: DeskSectionId = DESK_SECTIONS[0].id;
+      let hasMountedSections = false;
+
+      for (const section of DESK_SECTIONS) {
+        const element = document.getElementById(section.id);
+        if (!element) continue;
+        hasMountedSections = true;
+        if (element.getBoundingClientRect().top <= 180) {
+          nextSection = section.id;
+        }
+      }
+
+      if (!hasMountedSections) {
+        const hash = window.location.hash.replace(/^#/, "");
+        if (DESK_SECTIONS.some((section) => section.id === hash)) {
+          nextSection = hash as DeskSectionId;
+        }
+      }
+
+      setActiveSection((current) => (current === nextSection ? current : nextSection));
+    };
+
+    syncActiveSection();
+    window.addEventListener("scroll", syncActiveSection, { passive: true });
+    window.addEventListener("resize", syncActiveSection);
+    window.addEventListener("hashchange", syncActiveSection);
+    return () => {
+      window.removeEventListener("scroll", syncActiveSection);
+      window.removeEventListener("resize", syncActiveSection);
+      window.removeEventListener("hashchange", syncActiveSection);
+    };
+  }, [activeCompanyId]);
 
   const dashboardQuery = useQuery({
     queryKey: activeCompanyId ? queryKeys.polymarketCopy.dashboard(activeCompanyId) : ["polymarket-copy", "dashboard", "none"],
@@ -646,690 +799,659 @@ export function PolymarketCopy() {
   const liveExecutorLabel = "dormant / blocked";
 
   return (
-    <div
-      className="min-h-dvh bg-background"
-      style={{
-        backgroundImage: "radial-gradient(circle at top left, rgba(245, 158, 11, 0.08), transparent 28%), radial-gradient(circle at top right, rgba(16, 185, 129, 0.08), transparent 24%)",
-      }}
-    >
-      <header className="sticky top-0 z-30 border-b border-border bg-background/92 backdrop-blur">
-        <div className="mx-auto max-w-7xl px-4 py-4 sm:px-6">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center gap-2 text-xs font-medium uppercase tracking-[0.28em] text-muted-foreground">
-                <span>Paperclip Trading Desk</span>
-                <span className="h-1 w-1 rounded-full bg-foreground/30" />
-                <span>Polymarket Operator Dashboard</span>
-              </div>
-              <div>
-                <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Standalone Desk Surface</h1>
-                <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-                  Separate operator shell for the governed Polymarket desk. Paperclip backend remains the control plane for APIs, jobs, secrets, runtime config, and safety gates.
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Badge variant="secondary">Owner: {directOwnerLabel}</Badge>
-                <Badge variant="outline">Primary Workers: 5m + 15m monitors</Badge>
-                <Badge variant="outline">Shared Pipeline: normalize -&gt; risk -&gt; execution</Badge>
-                <Badge variant="outline">Support Agent: {data.underlyingModel.tradingAnalyst ? tradingAnalystLabel : "none"}</Badge>
-                <Badge variant="outline">Company: {companyLabel}</Badge>
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button variant="outline" size="sm" asChild>
-                <Link to="/dashboard">
-                  Open Control Plane
-                  <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
-                </Link>
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => walletSelectorMutation.mutate()}
-                disabled={walletSelectorMutation.isPending}
-              >
-                <RefreshCcw className="mr-1.5 h-3.5 w-3.5" />
-                Run Wallet Selection
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => monitor5mMutation.mutate()}
-                disabled={monitor5mMutation.isPending}
-              >
-                <TimerReset className="mr-1.5 h-3.5 w-3.5" />
-                Run 5m Monitor
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => monitor15mMutation.mutate()}
-                disabled={monitor15mMutation.isPending}
-              >
-                <TimerReset className="mr-1.5 h-3.5 w-3.5" />
-                Run 15m Monitor
-              </Button>
-            </div>
-          </div>
-          <div className="mt-4">
-            <SectionMenu compact />
-          </div>
-        </div>
-      </header>
+    <div className="min-h-screen bg-[#f6f7f9] text-foreground" style={LIGHT_DESK_THEME}>
+      <div className="relative">
+        <div
+          className="pointer-events-none absolute inset-x-0 top-0 h-72"
+          style={{
+            backgroundImage:
+              "radial-gradient(circle at top left, rgba(15, 23, 42, 0.07), transparent 34%), radial-gradient(circle at top right, rgba(148, 163, 184, 0.16), transparent 28%)",
+          }}
+        />
 
-      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:grid lg:grid-cols-[220px,1fr] lg:gap-8">
-        <aside className="hidden lg:block">
-          <div className="sticky top-28 space-y-4 rounded-3xl border border-border bg-background/88 p-4 shadow-sm">
-            <div className="space-y-1">
-              <div className="text-sm font-semibold">Operator Menu</div>
-              <div className="text-xs text-muted-foreground">
-                Dedicated desk shell, separate from the normal admin sidebar.
+        <header className="sticky top-0 z-40 border-b border-border/80 bg-background/92 backdrop-blur-xl">
+          <div className="mx-auto max-w-[1560px] px-4 py-4 sm:px-6 lg:px-8">
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
+                  <span>Polymarket Trading Desk</span>
+                  <span className="rounded-full border border-border/80 bg-white px-2.5 py-1 text-foreground">
+                    {companyPrefixLabel}
+                  </span>
+                  <span className="h-1 w-1 rounded-full bg-foreground/25" />
+                  <span>Standalone operator surface</span>
+                </div>
+                <div>
+                  <h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-[2rem]">
+                    {companyLabel}
+                  </h1>
+                  <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
+                    Two active monitors drive one shared deterministic pipeline. Paper execution is active, live execution stays dormant and blocked, and the desk keeps all current auth-readiness and operator controls intact.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2 xl:max-w-[34rem] xl:justify-end">
+                <Button variant="outline" size="sm" className="border-border/80 bg-white" asChild>
+                  <Link to="/dashboard">
+                    Open Control Plane
+                    <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
+                  </Link>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="border-border/80 bg-white"
+                  onClick={() => walletSelectorMutation.mutate()}
+                  disabled={walletSelectorMutation.isPending}
+                >
+                  <RefreshCcw className="mr-1.5 h-3.5 w-3.5" />
+                  Run Wallet Selection
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="border-border/80 bg-white"
+                  onClick={() => monitor5mMutation.mutate()}
+                  disabled={monitor5mMutation.isPending}
+                >
+                  <TimerReset className="mr-1.5 h-3.5 w-3.5" />
+                  Run 5m Monitor
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="border-border/80 bg-white"
+                  onClick={() => monitor15mMutation.mutate()}
+                  disabled={monitor15mMutation.isPending}
+                >
+                  <TimerReset className="mr-1.5 h-3.5 w-3.5" />
+                  Run 15m Monitor
+                </Button>
               </div>
             </div>
-            <SectionMenu />
-            <div className="rounded-2xl border border-border bg-muted/20 p-3 text-sm">
-              <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Desk Snapshot</div>
-              <div className="mt-3 space-y-2">
-                <div className="flex items-center justify-between gap-3">
-                  <span>Mode</span>
-                  <Badge variant={data.runtimeConfig.mode === "paper" ? "secondary" : "destructive"}>
-                    {data.runtimeConfig.mode}
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span>Live enabled</span>
-                  <Badge variant={toneForBoolean(data.runtimeConfig.liveEnabled, "destructive")}>
-                    {String(data.runtimeConfig.liveEnabled)}
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span>Kill switch</span>
-                  <Badge variant={data.runtimeConfig.tradingKillSwitch ? "destructive" : "secondary"}>
-                    {data.runtimeConfig.tradingKillSwitch ? "on" : "off"}
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span>5m Monitor</span>
-                  <Badge variant={toneForHealth(health5m)}>{health5m}</Badge>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span>15m Monitor</span>
-                  <Badge variant={toneForHealth(health15m)}>{health15m}</Badge>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span>Paper executor</span>
-                  <Badge variant="secondary">{paperExecutorLabel}</Badge>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span>Live executor</span>
-                  <Badge variant="destructive">{liveExecutorLabel}</Badge>
-                </div>
-              </div>
+
+            <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-7">
+              <HeaderStatusCard
+                label="Company"
+                value={<span className="inline-flex min-w-0 items-center truncate">{companyPrefixLabel}</span>}
+              />
+              <HeaderStatusCard
+                label="Owner"
+                value={<span className="block truncate">{directOwnerLabel}</span>}
+              />
+              <HeaderStatusCard
+                label="Mode"
+                value={<Badge variant={data.runtimeConfig.mode === "paper" ? "secondary" : "destructive"}>{data.runtimeConfig.mode}</Badge>}
+              />
+              <HeaderStatusCard
+                label="Live Enabled"
+                value={<Badge variant={toneForBoolean(data.runtimeConfig.liveEnabled, "destructive")}>{String(data.runtimeConfig.liveEnabled)}</Badge>}
+              />
+              <HeaderStatusCard
+                label="Kill Switch"
+                value={<Badge variant={data.runtimeConfig.tradingKillSwitch ? "destructive" : "secondary"}>{data.runtimeConfig.tradingKillSwitch ? "on" : "off"}</Badge>}
+              />
+              <HeaderStatusCard
+                label="5m Monitor"
+                value={<Badge variant={toneForHealth(health5m)}>{health5m}</Badge>}
+              />
+              <HeaderStatusCard
+                label="15m Monitor"
+                value={<Badge variant={toneForHealth(health15m)}>{health15m}</Badge>}
+              />
             </div>
           </div>
-        </aside>
+        </header>
 
-        <main className="space-y-8">
-          {dashboardQuery.error && <p className="text-sm text-destructive">{dashboardQuery.error.message}</p>}
+        <div className="relative z-10 mx-auto max-w-[1560px] px-4 py-6 sm:px-6 lg:px-8">
+          <div className="grid items-start gap-6 lg:grid-cols-[248px,minmax(0,1fr)] lg:gap-8">
+            <aside className="hidden lg:block">
+              <div className="sticky top-28 max-h-[calc(100vh-8rem)] overflow-y-auto rounded-[28px] border border-border/80 bg-white/96 p-4 shadow-[0_18px_40px_rgba(15,23,42,0.05)]">
+                <div className="space-y-1 border-b border-border/70 pb-4">
+                  <div className="text-sm font-semibold text-foreground">Desk Navigation</div>
+                  <div className="text-xs leading-5 text-muted-foreground">
+                    Natural page scroll with a compact operator rail for quick jumps.
+                  </div>
+                </div>
 
-          <DeskSection
-            id="overview"
-            title="Overview"
-            description="Operator-facing snapshot of the Polymarket desk. Paper remains the default execution mode."
-          >
-            <div className="grid gap-4 xl:grid-cols-[1.4fr,0.95fr]">
-              <Card className="rounded-3xl border-border bg-background/92 shadow-sm">
-                <CardContent className="space-y-5 p-6">
-                  <div className="flex flex-wrap gap-2">
-                    <Badge variant={data.runtimeConfig.mode === "paper" ? "secondary" : "destructive"}>
-                      Execution Mode: {data.runtimeConfig.mode}
-                    </Badge>
-                    <Badge variant={toneForBoolean(data.runtimeConfig.liveEnabled, "destructive")}>
-                      Live Enabled: {String(data.runtimeConfig.liveEnabled)}
-                    </Badge>
-                    <Badge variant={data.runtimeConfig.tradingKillSwitch ? "destructive" : "secondary"}>
-                      Kill Switch: {data.runtimeConfig.tradingKillSwitch ? "on" : "off"}
-                    </Badge>
-                    <Badge variant={toneForHealth(health5m)}>5m Worker: {health5m}</Badge>
-                    <Badge variant={toneForHealth(health15m)}>15m Worker: {health15m}</Badge>
-                  </div>
+                <div className="mt-4">
+                  <SectionMenu activeSection={activeSection} onSelect={setActiveSection} />
+                </div>
 
-                  <div className="space-y-2">
-                    <h2 className="text-2xl font-semibold tracking-tight">Polymarket Desk</h2>
-                    <p className="max-w-2xl text-sm text-muted-foreground">
-                      Two primary runtime workers, the 5m Monitor and 15m Monitor, feed a shared signal-normalization, risk-governor, and execution-engine pipeline. Paper execution is active now, while live execution remains dormant and blocked.
-                    </p>
+                <div className={`${INSET_SURFACE_CLASS} mt-4 p-4`}>
+                  <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                    System Shape
                   </div>
-
-                  <OverviewCards data={data} />
-                </CardContent>
-              </Card>
-
-              <Card className="rounded-3xl border-border bg-background/92 shadow-sm">
-                <CardHeader>
-                  <CardTitle className="text-base">Operating Model</CardTitle>
-                  <CardDescription>Two active monitor workers feed one shared deterministic pipeline. Trading Analyst is optional support, not part of the execution chain.</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4 text-sm">
-                  <div className="flex items-center justify-between gap-4">
-                    <span>Owner</span>
-                    <span className="text-right font-medium">{directOwnerLabel}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <span>Desk model</span>
-                    <span className="font-medium">Company-scoped runtime</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <span>Separate desk object</span>
-                    <span className="font-medium">{data.underlyingModel.hasSeparateDeskObject ? "Yes" : "No"}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <span>Watched wallets</span>
-                    <span className="font-medium">{data.overview.watchedWalletCount}</span>
-                  </div>
-                  <div className="rounded-2xl border border-border bg-muted/20 p-3">
+                  <div className="mt-3 space-y-3 text-sm text-foreground/90">
                     <div className="flex items-center justify-between gap-3">
-                      <span className="font-medium">Primary workers</span>
+                      <span>Primary workers</span>
                       <Badge variant={monitor5mService?.exists && monitor15mService?.exists ? "secondary" : "outline"}>
                         {(monitor5mService?.exists ? 1 : 0) + (monitor15mService?.exists ? 1 : 0)}/2 real
                       </Badge>
                     </div>
-                    <div className="mt-3 space-y-2">
-                      <div className="flex items-center justify-between gap-3">
-                        <span>Polymarket 5m Monitor</span>
-                        <div className="flex flex-wrap gap-2">
-                          <Badge variant={monitor5mService?.exists ? "secondary" : "outline"}>
-                            {monitor5mService?.exists ? "real" : "missing"}
-                          </Badge>
-                          <Badge variant={toneForHealth(health5m)}>{health5m}</Badge>
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <span>Polymarket 15m Monitor</span>
-                        <div className="flex flex-wrap gap-2">
-                          <Badge variant={monitor15mService?.exists ? "secondary" : "outline"}>
-                            {monitor15mService?.exists ? "real" : "missing"}
-                          </Badge>
-                          <Badge variant={toneForHealth(health15m)}>{health15m}</Badge>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="rounded-2xl border border-border bg-muted/20 p-3">
                     <div className="flex items-center justify-between gap-3">
-                      <span className="font-medium">Shared pipeline</span>
+                      <span>Shared pipeline</span>
                       <Badge variant={provisionedServiceCount === managedServices.length ? "secondary" : "outline"}>
-                        {provisionedServiceCount}/{managedServices.length} runtime services real
+                        {provisionedServiceCount}/{managedServices.length} services
                       </Badge>
                     </div>
-                    <div className="mt-3 space-y-2">
-                      <div className="flex items-center justify-between gap-3">
-                        <span>Signal normalization</span>
-                        <Badge variant="outline">deterministic logic</Badge>
-                      </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <span>Risk Governor</span>
-                        <div className="flex flex-wrap gap-2">
-                          <Badge variant={riskGovernorService?.exists ? "secondary" : "outline"}>
-                            {riskGovernorService?.exists ? "real" : "missing"}
-                          </Badge>
-                          {riskGovernorService?.exists && (
-                            <Badge variant="outline">{riskGovernorService.status ?? "unknown"}</Badge>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <span>Execution Engine</span>
-                        <div className="flex flex-wrap gap-2">
-                          <Badge variant={executionEngineService?.exists ? "secondary" : "outline"}>
-                            {executionEngineService?.exists ? "real" : "missing"}
-                          </Badge>
-                          {executionEngineService?.exists && (
-                            <Badge variant="outline">{executionEngineService.status ?? "unknown"}</Badge>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <span>Paper executor</span>
-                        <Badge variant="secondary">{paperExecutorLabel}</Badge>
-                      </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <span>Live executor</span>
-                        <Badge variant="destructive">{liveExecutorLabel}</Badge>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="rounded-2xl border border-border bg-muted/20 p-3">
                     <div className="flex items-center justify-between gap-3">
-                      <span className="font-medium">Optional support</span>
-                      <Badge variant={data.underlyingModel.tradingAnalyst ? "outline" : "secondary"}>
-                        {data.underlyingModel.tradingAnalyst ? "enabled" : "not provisioned"}
-                      </Badge>
+                      <span>Paper executor</span>
+                      <Badge variant="secondary">active</Badge>
                     </div>
-                    <div className="mt-3 flex items-center justify-between gap-4">
-                      <span>Trading Analyst</span>
-                      <span className="text-right font-medium">{tradingAnalystLabel}</span>
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Live executor</span>
+                      <Badge variant="destructive">blocked</Badge>
                     </div>
                   </div>
-                </CardContent>
-              </Card>
-            </div>
-          </DeskSection>
+                </div>
+              </div>
+            </aside>
 
-          <DeskSection
-            id="desk-status"
-            title="Desk Status"
-            description="Core desk health, ownership, exposure, and runtime thresholds."
-          >
-            <div className="grid gap-4 xl:grid-cols-3">
-              <Card className="rounded-2xl border-border bg-background/90 shadow-sm">
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <BriefcaseBusiness className="h-4 w-4" />
-                    Operations
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span>Accepted today</span>
-                    <span className="font-medium">{data.overview.acceptedCount}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Skipped today</span>
-                    <span className="font-medium">{data.overview.skippedCount}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Blocked today</span>
-                    <span className="font-medium">{data.overview.blockedCount}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Open paper trades</span>
-                    <span className="font-medium">{data.overview.paperTradesOpen}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Closed paper trades</span>
-                    <span className="font-medium">{data.overview.paperTradesClosed}</span>
-                  </div>
-                </CardContent>
-              </Card>
+            <main className="min-w-0 space-y-8">
+              {dashboardQuery.error && <p className="text-sm text-destructive">{dashboardQuery.error.message}</p>}
 
-              <Card className="rounded-2xl border-border bg-background/90 shadow-sm">
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <ShieldAlert className="h-4 w-4" />
-                    Exposure
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span>Current open exposure</span>
-                    <span className="font-medium">{formatUsd(data.risk.currentExposureUsd)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Daily realized loss</span>
-                    <span className="font-medium">{formatUsd(data.risk.dailyRealizedLossUsd)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Realized PnL</span>
-                    <span className="font-medium">{formatUsd(data.overview.realizedPnlUsd)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Unrealized PnL</span>
-                    <span className="font-medium">{formatUsd(data.overview.unrealizedPnlUsd)}</span>
-                  </div>
-                </CardContent>
-              </Card>
+              <div className="lg:hidden">
+                <SectionMenu activeSection={activeSection} compact onSelect={setActiveSection} />
+              </div>
 
-              <Card className="rounded-2xl border-border bg-background/90 shadow-sm">
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <ShieldCheck className="h-4 w-4" />
-                    Runtime Thresholds
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span>Min wallet score</span>
-                    <span className="font-medium">{data.runtimeConfig.minWalletScore.toFixed(2)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Min signal materiality</span>
-                    <span className="font-medium">{formatUsd(data.runtimeConfig.minSignalMateriality)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Max spread</span>
-                    <span className="font-medium">{data.runtimeConfig.maxSpreadBps} bps</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Max market exposure</span>
-                    <span className="font-medium">{formatUsd(data.runtimeConfig.maxExposurePerMarket)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Max open paper exposure</span>
-                    <span className="font-medium">{formatUsd(data.runtimeConfig.maxTotalOpenPaperExposure)}</span>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          </DeskSection>
+              <DeskSection
+                id="overview"
+                title="Overview"
+                description="A cleaner operator shell centered on the two live paper-monitor cadences and their shared execution pipeline."
+              >
+                <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.45fr),420px]">
+                  <Card className={DESK_SURFACE_CLASS}>
+                    <CardContent className="space-y-6 p-6">
+                      <div className="flex flex-wrap gap-2">
+                        <Badge variant={data.runtimeConfig.mode === "paper" ? "secondary" : "destructive"}>
+                          Execution Mode: {data.runtimeConfig.mode}
+                        </Badge>
+                        <Badge variant={toneForBoolean(data.runtimeConfig.liveEnabled, "destructive")}>
+                          Live Enabled: {String(data.runtimeConfig.liveEnabled)}
+                        </Badge>
+                        <Badge variant={data.runtimeConfig.tradingKillSwitch ? "destructive" : "secondary"}>
+                          Kill Switch: {data.runtimeConfig.tradingKillSwitch ? "on" : "off"}
+                        </Badge>
+                        <Badge variant={toneForHealth(health5m)}>5m Monitor: {health5m}</Badge>
+                        <Badge variant={toneForHealth(health15m)}>15m Monitor: {health15m}</Badge>
+                      </div>
 
-          <DeskSection
-            id="worker-status"
-            title="Worker Status"
-            description="The 5m and 15m monitors are the only active workers. Everything else is shared support logic behind the same execution path."
-          >
-            <div className="grid gap-4 xl:grid-cols-3">
-              {[
-                {
-                  workerKey: "polymarket-monitor-5m",
-                  label: "5m Monitor",
-                  health: health5m,
-                  lastSuccess: data.overview.lastSuccessful5mRun,
-                },
-                {
-                  workerKey: "polymarket-monitor-15m",
-                  label: "15m Monitor",
-                  health: health15m,
-                  lastSuccess: data.overview.lastSuccessful15mRun,
-                },
-              ].map((worker) => {
-                const run = latestWorkerRuns.get(worker.workerKey);
-                return (
-                  <Card key={worker.workerKey} className="rounded-2xl border-border bg-background/90 shadow-sm">
-                    <CardHeader className="pb-3">
-                      <CardTitle className="flex items-center justify-between gap-2 text-base">
-                        <span>{worker.label}</span>
-                        <Badge variant={toneForHealth(worker.health)}>{worker.health}</Badge>
-                      </CardTitle>
+                      <div className="grid gap-4 xl:grid-cols-[minmax(0,0.88fr),minmax(0,1.12fr)]">
+                        <div className={`${INSET_SURFACE_CLASS} p-4`}>
+                          <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                            Primary Workers
+                          </div>
+                          <div className="mt-3 grid gap-3">
+                            {[
+                              {
+                                label: "Polymarket 5m Monitor",
+                                status: health5m,
+                                exists: monitor5mService?.exists,
+                                note: "Fast wallet scan and signal emission.",
+                              },
+                              {
+                                label: "Polymarket 15m Monitor",
+                                status: health15m,
+                                exists: monitor15mService?.exists,
+                                note: "Higher-latency confirmation pass and signal refresh.",
+                              },
+                            ].map((worker) => (
+                              <div key={worker.label} className="rounded-[18px] border border-border/80 bg-white p-4 shadow-[0_8px_22px_rgba(15,23,42,0.04)]">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="font-semibold text-foreground">{worker.label}</div>
+                                  <div className="flex flex-wrap gap-2">
+                                    <Badge variant={worker.exists ? "secondary" : "outline"}>{worker.exists ? "real" : "missing"}</Badge>
+                                    <Badge variant={toneForHealth(worker.status)}>{worker.status}</Badge>
+                                  </div>
+                                </div>
+                                <div className="mt-2 text-sm leading-6 text-muted-foreground">{worker.note}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className={`${INSET_SURFACE_CLASS} p-4`}>
+                          <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                            Shared Deterministic Pipeline
+                          </div>
+                          <div className="mt-3 grid gap-3">
+                            {[
+                              ["Signal normalization", "Shared deterministic logic"],
+                              [
+                                "Risk Governor",
+                                riskGovernorService?.exists
+                                  ? `Registered runtime service • ${riskGovernorService.status ?? "managed"}`
+                                  : "Missing runtime registration",
+                              ],
+                              [
+                                "Execution Engine",
+                                executionEngineService?.exists
+                                  ? `Registered runtime service • ${executionEngineService.status ?? "managed"}`
+                                  : "Missing runtime registration",
+                              ],
+                            ].map(([label, description]) => (
+                              <div key={label} className="rounded-[18px] border border-border/80 bg-white px-4 py-3 shadow-[0_8px_22px_rgba(15,23,42,0.04)]">
+                                <div className="font-semibold text-foreground">{label}</div>
+                                <div className="mt-1 text-sm leading-6 text-muted-foreground">{description}</div>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                            <div className="rounded-[18px] border border-border/80 bg-white px-4 py-3 shadow-[0_8px_22px_rgba(15,23,42,0.04)]">
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="font-semibold text-foreground">Paper executor</span>
+                                <Badge variant="secondary">active</Badge>
+                              </div>
+                              <div className="mt-1 text-sm leading-6 text-muted-foreground">{paperExecutorLabel}</div>
+                            </div>
+                            <div className="rounded-[18px] border border-border/80 bg-white px-4 py-3 shadow-[0_8px_22px_rgba(15,23,42,0.04)]">
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="font-semibold text-foreground">Live executor</span>
+                                <Badge variant="destructive">blocked</Badge>
+                              </div>
+                              <div className="mt-1 text-sm leading-6 text-muted-foreground">{liveExecutorLabel}</div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <OverviewCards data={data} />
+                    </CardContent>
+                  </Card>
+
+                  <Card className={DESK_SURFACE_CLASS}>
+                    <CardHeader className="border-b border-border/70 pb-4">
+                      <CardTitle className="text-base">Desk Model</CardTitle>
+                      <CardDescription>
+                        One company-scoped trading system with optional analyst support. No execution zoo.
+                      </CardDescription>
                     </CardHeader>
-                    <CardContent className="space-y-2 text-sm">
-                      <div className="flex items-center justify-between">
-                        <span>Last successful run</span>
-                        <span className="font-medium">{formatDate(worker.lastSuccess)}</span>
+                    <CardContent className="space-y-4 p-6 text-sm">
+                      <div className="flex items-center justify-between gap-4">
+                        <span>Owner</span>
+                        <span className="text-right font-medium">{directOwnerLabel}</span>
                       </div>
-                      <div className="flex items-center justify-between">
-                        <span>Latest status</span>
-                        <span className="font-medium">{run?.status ?? "idle"}</span>
+                      <div className="flex items-center justify-between gap-4">
+                        <span>Desk model</span>
+                        <span className="font-medium">Company-scoped runtime</span>
                       </div>
-                      <div className="flex items-center justify-between">
-                        <span>Signals in latest run</span>
-                        <span className="font-medium">{run?.signalCount ?? 0}</span>
+                      <div className="flex items-center justify-between gap-4">
+                        <span>Separate desk object</span>
+                        <span className="font-medium">{data.underlyingModel.hasSeparateDeskObject ? "Yes" : "No"}</span>
                       </div>
-                      <div className="flex items-center justify-between">
-                        <span>Accepted in latest run</span>
-                        <span className="font-medium">{run?.acceptedCount ?? 0}</span>
+                      <div className="flex items-center justify-between gap-4">
+                        <span>Watched wallets</span>
+                        <span className="font-medium">{data.overview.watchedWalletCount}</span>
+                      </div>
+                      <div className={`${INSET_SURFACE_CLASS} p-4`}>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="font-medium text-foreground">Trading Analyst</span>
+                          <Badge variant={data.underlyingModel.tradingAnalyst ? "outline" : "secondary"}>
+                            {data.underlyingModel.tradingAnalyst ? "optional support" : "not provisioned"}
+                          </Badge>
+                        </div>
+                        <div className="mt-2 text-sm leading-6 text-muted-foreground">
+                          {data.underlyingModel.tradingAnalyst
+                            ? `${tradingAnalystLabel} is available for summaries, context, and reporting, but not part of the execution chain.`
+                            : "The execution path does not depend on an analyst agent."}
+                        </div>
                       </div>
                     </CardContent>
                   </Card>
-                );
-              })}
-              <Card className="rounded-2xl border-border bg-background/90 shadow-sm">
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center justify-between gap-2 text-base">
-                    <span>Shared Pipeline</span>
-                    <Badge variant="outline">support logic</Badge>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span>Signal normalization</span>
-                    <span className="font-medium">deterministic</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Risk Governor</span>
-                    <span className="font-medium">{riskGovernorService?.status ?? (riskGovernorService?.exists ? "registered" : "missing")}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Execution Engine</span>
-                    <span className="font-medium">{executionEngineService?.status ?? (executionEngineService?.exists ? "registered" : "missing")}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Paper executor</span>
-                    <span className="font-medium">{paperExecutorLabel}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Live executor</span>
-                    <span className="font-medium">{liveExecutorLabel}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Signals today</span>
-                    <span className="font-medium">{data.overview.signalsToday}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Open paper trades</span>
-                    <span className="font-medium">{data.overview.paperTradesOpen}</span>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          </DeskSection>
+                </div>
+              </DeskSection>
 
-          <DeskSection
-            id="live-readiness"
-            title="Live Readiness"
-            description="Governance state for future live activation. V0 remains paper-only and still never places orders."
-          >
-            <div className="grid gap-4 xl:grid-cols-[1.15fr,1fr]">
-              <Card className="rounded-2xl border-border bg-background/90 shadow-sm">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <Radar className="h-4 w-4" />
-                    Live Gate Stack
-                  </CardTitle>
-                  <CardDescription>
-                    Live dispatch stays impossible by default and unresolved until a future executor exists.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="grid gap-3 sm:grid-cols-2">
-                  <div className="rounded-xl border border-border p-3">
-                    <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Mode</div>
-                    <div className="mt-2 text-lg font-semibold">{data.runtimeConfig.mode}</div>
-                  </div>
-                  <div className="rounded-xl border border-border p-3">
-                    <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Live enabled</div>
-                    <div className="mt-2 text-lg font-semibold">{String(data.runtimeConfig.liveEnabled)}</div>
-                  </div>
-                  <div className="rounded-xl border border-border p-3">
-                    <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Kill switch</div>
-                    <div className="mt-2 text-lg font-semibold">{data.runtimeConfig.tradingKillSwitch ? "on" : "off"}</div>
-                  </div>
-                  <div className="rounded-xl border border-border p-3">
-                    <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Authenticated readiness</div>
-                    <div className="mt-2 text-lg font-semibold">{readiness.authenticatedLiveReadiness}</div>
-                  </div>
-                </CardContent>
-              </Card>
+              <DeskSection
+                id="desk-status"
+                title="Desk Status"
+                description="Core desk health, exposure, ownership, and runtime thresholds in a denser operator layout."
+              >
+                <div className="grid gap-4 xl:grid-cols-3">
+                  <Card className={DESK_SURFACE_CLASS}>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <BriefcaseBusiness className="h-4 w-4" />
+                        Operations
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-2 text-sm">
+                      <div className="flex items-center justify-between"><span>Accepted today</span><span className="font-medium">{data.overview.acceptedCount}</span></div>
+                      <div className="flex items-center justify-between"><span>Skipped today</span><span className="font-medium">{data.overview.skippedCount}</span></div>
+                      <div className="flex items-center justify-between"><span>Blocked today</span><span className="font-medium">{data.overview.blockedCount}</span></div>
+                      <div className="flex items-center justify-between"><span>Open paper trades</span><span className="font-medium">{data.overview.paperTradesOpen}</span></div>
+                      <div className="flex items-center justify-between"><span>Closed paper trades</span><span className="font-medium">{data.overview.paperTradesClosed}</span></div>
+                    </CardContent>
+                  </Card>
 
-              <Card className="rounded-2xl border-border bg-background/90 shadow-sm">
-                <CardHeader>
-                  <CardTitle className="text-base">Current Runtime Outcome</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3 text-sm">
-                  <div className="rounded-xl border border-border bg-muted/20 p-3 text-muted-foreground">
-                    Even with valid credentials present, the desk remains paper-first. A future live phase still needs explicit operator controls plus a real execution implementation.
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <span>Validation mode</span>
-                    <span className="font-medium">{readiness.validationMode}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <span>Last validation</span>
-                    <span className="font-medium">{formatDate(readiness.lastValidation.checkedAt)}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <span>Last derivation attempt</span>
-                    <span className="font-medium">{formatDate(readiness.lastDerivation.attemptedAt)}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <span>Live executor</span>
-                    <span className="font-medium">Not implemented</span>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          </DeskSection>
+                  <Card className={DESK_SURFACE_CLASS}>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <ShieldAlert className="h-4 w-4" />
+                        Exposure
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-2 text-sm">
+                      <div className="flex items-center justify-between"><span>Current open exposure</span><span className="font-medium">{formatUsd(data.risk.currentExposureUsd)}</span></div>
+                      <div className="flex items-center justify-between"><span>Daily realized loss</span><span className="font-medium">{formatUsd(data.risk.dailyRealizedLossUsd)}</span></div>
+                      <div className="flex items-center justify-between"><span>Realized PnL</span><span className="font-medium">{formatUsd(data.overview.realizedPnlUsd)}</span></div>
+                      <div className="flex items-center justify-between"><span>Unrealized PnL</span><span className="font-medium">{formatUsd(data.overview.unrealizedPnlUsd)}</span></div>
+                    </CardContent>
+                  </Card>
 
-          <DeskSection
-            id="auth-readiness"
-            title="Auth Readiness"
-            description="Optional secret refs and operator-safe credential readiness, with no impact on paper-mode startup."
-          >
-            <AuthReadinessPanel
-              data={data}
-              availableSecrets={availableSecrets}
-              isSecretsLoading={secretsQuery.isLoading}
-              secretsErrorMessage={secretsQuery.error ? "Secret metadata could not be loaded. Board-level access is required for binding and derivation actions." : null}
-              statusMessage={statusMessage}
-              privateKeyDraft={privateKeyDraft}
-              onPrivateKeyDraftChange={setPrivateKeyDraft}
-              onStorePrivateKey={() => storePrivateKeyMutation.mutate()}
-              onCheckReadiness={() => authReadinessMutation.mutate()}
-              onDeriveCredentials={() => deriveCredentialsMutation.mutate()}
-              onRefreshStatus={() => {
-                dashboardQuery.refetch();
-                secretsQuery.refetch();
-              }}
-              onBindSecret={(key, secretId) => updateAuthRefMutation.mutate({ key, secretId })}
-              isStoringPrivateKey={storePrivateKeyMutation.isPending}
-              isCheckingReadiness={authReadinessMutation.isPending}
-              isDerivingCredentials={deriveCredentialsMutation.isPending}
-              isUpdatingSecretRef={updateAuthRefMutation.isPending}
-            />
-          </DeskSection>
+                  <Card className={DESK_SURFACE_CLASS}>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <ShieldCheck className="h-4 w-4" />
+                        Runtime Thresholds
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-2 text-sm">
+                      <div className="flex items-center justify-between"><span>Min wallet score</span><span className="font-medium">{data.runtimeConfig.minWalletScore.toFixed(2)}</span></div>
+                      <div className="flex items-center justify-between"><span>Min signal materiality</span><span className="font-medium">{formatUsd(data.runtimeConfig.minSignalMateriality)}</span></div>
+                      <div className="flex items-center justify-between"><span>Max spread</span><span className="font-medium">{data.runtimeConfig.maxSpreadBps} bps</span></div>
+                      <div className="flex items-center justify-between"><span>Max market exposure</span><span className="font-medium">{formatUsd(data.runtimeConfig.maxExposurePerMarket)}</span></div>
+                      <div className="flex items-center justify-between"><span>Max open paper exposure</span><span className="font-medium">{formatUsd(data.runtimeConfig.maxTotalOpenPaperExposure)}</span></div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </DeskSection>
 
-          <DeskSection
-            id="wallets"
-            title="Wallets"
-            description="Active watched wallets, bench candidates, and composite score breakdowns."
-          >
-            <SectionTable
-              empty="No watched wallets yet."
-              headers={["Wallet", "Status", "Score", "Component Scores", "Last Refreshed"]}
-              rows={data.watchedWallets.map((wallet) => [
-                <div key="wallet" className="space-y-1">
-                  <div className="font-mono text-xs">{wallet.walletAddress}</div>
-                  <div className="text-xs text-muted-foreground">{wallet.label || "Unlabeled"}</div>
-                </div>,
-                <Badge key="status" variant={wallet.status === "active" ? "secondary" : wallet.status === "bench" ? "outline" : "destructive"}>
-                  {wallet.status}
-                </Badge>,
-                <span key="score" className="font-medium">{wallet.score.toFixed(3)}</span>,
-                <div key="components" className="space-y-1 text-xs text-muted-foreground">
-                  <div>eff {wallet.componentScores.efficiency.toFixed(2)} | con {wallet.componentScores.consistency.toFixed(2)}</div>
-                  <div>div {wallet.componentScores.diversification.toFixed(2)} | rec {wallet.componentScores.recency.toFixed(2)}</div>
-                  <div>pen {wallet.componentScores.concentrationPenalty.toFixed(2)}</div>
-                </div>,
-                formatDate(wallet.lastRefreshedAt),
-              ])}
-            />
-          </DeskSection>
+              <DeskSection
+                id="workers"
+                title="Workers"
+                description="The only active workers are the 5m and 15m monitors. Everything else is shared deterministic support logic behind the same execution path."
+              >
+                <div className="grid gap-4 xl:grid-cols-3">
+                  {[
+                    {
+                      workerKey: "polymarket-monitor-5m",
+                      label: "5m Monitor",
+                      cadence: "Every five minutes",
+                      health: health5m,
+                      exists: monitor5mService?.exists,
+                      lastSuccess: data.overview.lastSuccessful5mRun,
+                    },
+                    {
+                      workerKey: "polymarket-monitor-15m",
+                      label: "15m Monitor",
+                      cadence: "Every fifteen minutes",
+                      health: health15m,
+                      exists: monitor15mService?.exists,
+                      lastSuccess: data.overview.lastSuccessful15mRun,
+                    },
+                  ].map((worker) => {
+                    const run = latestWorkerRuns.get(worker.workerKey);
+                    return (
+                      <Card key={worker.workerKey} className={DESK_SURFACE_CLASS}>
+                        <CardHeader className="pb-3">
+                          <CardTitle className="flex items-center justify-between gap-2 text-base">
+                            <span>{worker.label}</span>
+                            <Badge variant={toneForHealth(worker.health)}>{worker.health}</Badge>
+                          </CardTitle>
+                          <CardDescription>{worker.cadence}</CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-2 text-sm">
+                          <div className="flex items-center justify-between"><span>Runtime registration</span><Badge variant={worker.exists ? "secondary" : "outline"}>{worker.exists ? "real" : "missing"}</Badge></div>
+                          <div className="flex items-center justify-between"><span>Last successful run</span><span className="font-medium">{formatDate(worker.lastSuccess)}</span></div>
+                          <div className="flex items-center justify-between"><span>Latest status</span><span className="font-medium">{run?.status ?? "idle"}</span></div>
+                          <div className="flex items-center justify-between"><span>Signals in latest run</span><span className="font-medium">{run?.signalCount ?? 0}</span></div>
+                          <div className="flex items-center justify-between"><span>Accepted in latest run</span><span className="font-medium">{run?.acceptedCount ?? 0}</span></div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
 
-          <DeskSection
-            id="signals"
-            title="Signals"
-            description="Structured wallet activity events normalized from dual-cadence monitoring."
-          >
-            <SectionTable
-              empty="No signals yet."
-              headers={["Time", "Source Wallet", "Market", "Action", "Cadence", "Decision", "Reason"]}
-              rows={sortedSignals.map((signal) => [
-                formatDate(signal.createdAt),
-                <span key="wallet" className="font-mono text-xs">{signal.sourceWalletAddress}</span>,
-                <div key="market" className="space-y-1">
-                  <div>{signal.marketTitle || signal.marketId}</div>
-                  <div className="text-xs text-muted-foreground">{signal.marketSlug || signal.marketId}</div>
-                </div>,
-                signal.action,
-                signal.cadence,
-                <DecisionBadge key="decision" decision={signal.decision} />,
-                signal.decision?.reasonCode ?? "pending",
-              ])}
-            />
-          </DeskSection>
+                  <Card className={DESK_SURFACE_CLASS}>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="flex items-center justify-between gap-2 text-base">
+                        <span>Shared Pipeline</span>
+                        <Badge variant="outline">support logic</Badge>
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3 text-sm">
+                      <div className={`${INSET_SURFACE_CLASS} p-3`}>
+                        <div className="flex items-center justify-between"><span>Signal normalization</span><span className="font-medium">deterministic</span></div>
+                      </div>
+                      <div className={`${INSET_SURFACE_CLASS} p-3`}>
+                        <div className="flex items-center justify-between"><span>Risk Governor</span><span className="font-medium">{riskGovernorService?.status ?? (riskGovernorService?.exists ? "registered" : "missing")}</span></div>
+                      </div>
+                      <div className={`${INSET_SURFACE_CLASS} p-3`}>
+                        <div className="flex items-center justify-between"><span>Execution Engine</span><span className="font-medium">{executionEngineService?.status ?? (executionEngineService?.exists ? "registered" : "missing")}</span></div>
+                        <div className="mt-2 text-xs leading-5 text-muted-foreground">This is the shared component that makes paper trades now.</div>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className={`${INSET_SURFACE_CLASS} p-3`}>
+                          <div className="flex items-center justify-between"><span>Paper executor</span><Badge variant="secondary">active</Badge></div>
+                          <div className="mt-2 text-xs leading-5 text-muted-foreground">{paperExecutorLabel}</div>
+                        </div>
+                        <div className={`${INSET_SURFACE_CLASS} p-3`}>
+                          <div className="flex items-center justify-between"><span>Live executor</span><Badge variant="destructive">blocked</Badge></div>
+                          <div className="mt-2 text-xs leading-5 text-muted-foreground">{liveExecutorLabel}</div>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </DeskSection>
 
-          <DeskSection
-            id="paper-trades"
-            title="Paper Trades"
-            description="Simulated copy-trade lifecycle with explicit assumptions and no live order placement."
-          >
-            <SectionTable
-              empty="No paper trades yet."
-              headers={["Wallet", "Market", "Side", "Status", "Entry", "Current Mark", "Size", "Unrealized", "Realized", "Opened", "Closed"]}
-              rows={data.paperTrades.map((trade) => [
-                <span key="wallet" className="font-mono text-xs">{trade.sourceWalletAddress}</span>,
-                trade.marketTitle || trade.marketId,
-                trade.side,
-                <TradeStatusBadge key="status" trade={trade} />,
-                trade.estimatedEntryPrice == null ? "n/a" : trade.estimatedEntryPrice.toFixed(3),
-                trade.currentMarkPrice == null ? "n/a" : trade.currentMarkPrice.toFixed(3),
-                trade.quantity.toFixed(3),
-                formatUsd(trade.unrealizedPnlUsd),
-                formatUsd(trade.realizedPnlUsd),
-                formatDate(trade.openedAt),
-                formatDate(trade.closedAt),
-              ])}
-            />
-          </DeskSection>
+              <DeskSection
+                id="wallets"
+                title="Wallets"
+                description="Active watched wallets, bench candidates, and composite score breakdowns."
+              >
+                <SectionTable
+                  empty="No watched wallets yet."
+                  headers={["Wallet", "Status", "Score", "Component Scores", "Last Refreshed"]}
+                  rows={data.watchedWallets.map((wallet) => [
+                    <div key="wallet" className="space-y-1">
+                      <div className="font-mono text-xs">{wallet.walletAddress}</div>
+                      <div className="text-xs text-muted-foreground">{wallet.label || "Unlabeled"}</div>
+                    </div>,
+                    <Badge key="status" variant={wallet.status === "active" ? "secondary" : wallet.status === "bench" ? "outline" : "destructive"}>
+                      {wallet.status}
+                    </Badge>,
+                    <span key="score" className="font-medium">{wallet.score.toFixed(3)}</span>,
+                    <div key="components" className="space-y-1 text-xs leading-5 text-muted-foreground">
+                      <div>eff {wallet.componentScores.efficiency.toFixed(2)} • con {wallet.componentScores.consistency.toFixed(2)}</div>
+                      <div>div {wallet.componentScores.diversification.toFixed(2)} • rec {wallet.componentScores.recency.toFixed(2)}</div>
+                      <div>pen {wallet.componentScores.concentrationPenalty.toFixed(2)}</div>
+                    </div>,
+                    formatDate(wallet.lastRefreshedAt),
+                  ])}
+                />
+              </DeskSection>
 
-          <DeskSection
-            id="risk-blocks"
-            title="Risk / Blocks"
-            description="Blocked signals, threshold failures, kill-switch state, and current exposure posture."
-          >
-            <div className="space-y-4">
-              <SectionTable
-                empty="No blocked signals today."
-                headers={["Time", "Signal", "Reason", "Decision"]}
-                rows={data.risk.blockedSignals.map((decision) => {
-                  const signal = data.signals.find((item) => item.id === decision.signalId);
-                  return [
-                    formatDate(decision.createdAt),
-                    signal?.marketTitle || signal?.marketId || decision.signalId,
-                    decision.reasonCode,
-                    <Badge key="decision" variant="destructive">{decision.decision}</Badge>,
-                  ];
-                })}
-              />
+              <DeskSection
+                id="signals"
+                title="Signals"
+                description="Structured wallet activity events normalized from the dual-cadence monitoring pass."
+              >
+                <SectionTable
+                  empty="No signals yet."
+                  headers={["Time", "Source Wallet", "Market", "Action", "Cadence", "Decision", "Reason"]}
+                  rows={sortedSignals.map((signal) => [
+                    formatDate(signal.createdAt),
+                    <span key="wallet" className="font-mono text-xs">{signal.sourceWalletAddress}</span>,
+                    <div key="market" className="space-y-1">
+                      <div>{signal.marketTitle || signal.marketId}</div>
+                      <div className="text-xs text-muted-foreground">{signal.marketSlug || signal.marketId}</div>
+                    </div>,
+                    signal.action,
+                    signal.cadence,
+                    <DecisionBadge key="decision" decision={signal.decision} />,
+                    signal.decision?.reasonCode ?? "pending",
+                  ])}
+                />
+              </DeskSection>
 
-              <Card className="rounded-2xl border-border bg-background/90 shadow-sm">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">Threshold Failures</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2 text-sm">
-                  {data.risk.thresholdFailures.length === 0 && (
-                    <div className="text-muted-foreground">No threshold failures yet today.</div>
-                  )}
-                  {data.risk.thresholdFailures.map((item) => (
-                    <div key={item.reasonCode} className="flex items-center justify-between rounded-xl border border-border px-3 py-2">
-                      <span>{item.reasonCode}</span>
-                      <span className="font-medium">{item.count}</span>
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
-            </div>
-          </DeskSection>
+              <DeskSection
+                id="paper-trades"
+                title="Paper Trades"
+                description="Simulated copy-trade lifecycle with explicit assumptions and no live order placement."
+              >
+                <SectionTable
+                  empty="No paper trades yet."
+                  headers={["Wallet", "Market", "Side", "Status", "Entry", "Current Mark", "Size", "Unrealized", "Realized", "Opened", "Closed"]}
+                  rows={data.paperTrades.map((trade) => [
+                    <span key="wallet" className="font-mono text-xs">{trade.sourceWalletAddress}</span>,
+                    trade.marketTitle || trade.marketId,
+                    trade.side,
+                    <TradeStatusBadge key="status" trade={trade} />,
+                    trade.estimatedEntryPrice == null ? "n/a" : trade.estimatedEntryPrice.toFixed(3),
+                    trade.currentMarkPrice == null ? "n/a" : trade.currentMarkPrice.toFixed(3),
+                    trade.quantity.toFixed(3),
+                    formatUsd(trade.unrealizedPnlUsd),
+                    formatUsd(trade.realizedPnlUsd),
+                    formatDate(trade.openedAt),
+                    formatDate(trade.closedAt),
+                  ])}
+                />
+              </DeskSection>
 
-          <DeskSection
-            id="audit"
-            title="Audit"
-            description="Runtime-safe activity log for wallet refreshes, monitor runs, signal decisions, config changes, and auth checks."
-          >
-            <SectionTable
-              empty="No Polymarket audit activity yet."
-              headers={["Time", "Action", "Entity", "Actor", "Details"]}
-              rows={data.auditLog.map((entry) => [
-                formatDate(entry.createdAt),
-                entry.action,
-                `${entry.entityType}:${entry.entityId}`,
-                `${entry.actorType}:${entry.actorId}`,
-                <pre key="details" className="max-w-[28rem] overflow-x-auto whitespace-pre-wrap text-xs text-muted-foreground">
-                  {JSON.stringify(entry.details ?? {}, null, 2)}
-                </pre>,
-              ])}
-            />
-          </DeskSection>
-        </main>
+              <DeskSection
+                id="risk-blocks"
+                title="Risk / Blocks"
+                description="Blocked signals, threshold failures, kill-switch state, and current exposure posture."
+              >
+                <div className="space-y-4">
+                  <SectionTable
+                    empty="No blocked signals today."
+                    headers={["Time", "Signal", "Reason", "Decision"]}
+                    rows={data.risk.blockedSignals.map((decision) => {
+                      const signal = data.signals.find((item) => item.id === decision.signalId);
+                      return [
+                        formatDate(decision.createdAt),
+                        signal?.marketTitle || signal?.marketId || decision.signalId,
+                        decision.reasonCode,
+                        <Badge key="decision" variant="destructive">{decision.decision}</Badge>,
+                      ];
+                    })}
+                  />
+
+                  <Card className={DESK_SURFACE_CLASS}>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base">Threshold Failures</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-2 text-sm">
+                      {data.risk.thresholdFailures.length === 0 && (
+                        <div className="text-muted-foreground">No threshold failures yet today.</div>
+                      )}
+                      {data.risk.thresholdFailures.map((item) => (
+                        <div key={item.reasonCode} className="flex items-center justify-between rounded-[18px] border border-border/80 bg-muted/25 px-3 py-2.5">
+                          <span>{item.reasonCode}</span>
+                          <span className="font-medium">{item.count}</span>
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+                </div>
+              </DeskSection>
+
+              <DeskSection
+                id="auth-readiness"
+                title="Auth Readiness"
+                description="Optional secret refs and operator-safe credential readiness, with no impact on paper-mode startup."
+              >
+                <AuthReadinessPanel
+                  data={data}
+                  availableSecrets={availableSecrets}
+                  isSecretsLoading={secretsQuery.isLoading}
+                  secretsErrorMessage={secretsQuery.error ? "Secret metadata could not be loaded. Board-level access is required for binding and derivation actions." : null}
+                  statusMessage={statusMessage}
+                  privateKeyDraft={privateKeyDraft}
+                  onPrivateKeyDraftChange={setPrivateKeyDraft}
+                  onStorePrivateKey={() => storePrivateKeyMutation.mutate()}
+                  onCheckReadiness={() => authReadinessMutation.mutate()}
+                  onDeriveCredentials={() => deriveCredentialsMutation.mutate()}
+                  onRefreshStatus={() => {
+                    dashboardQuery.refetch();
+                    secretsQuery.refetch();
+                  }}
+                  onBindSecret={(key, secretId) => updateAuthRefMutation.mutate({ key, secretId })}
+                  isStoringPrivateKey={storePrivateKeyMutation.isPending}
+                  isCheckingReadiness={authReadinessMutation.isPending}
+                  isDerivingCredentials={deriveCredentialsMutation.isPending}
+                  isUpdatingSecretRef={updateAuthRefMutation.isPending}
+                />
+              </DeskSection>
+
+              <DeskSection
+                id="live-readiness"
+                title="Live Readiness"
+                description="Governance state for future live activation. V0 remains paper-only and still never places orders."
+              >
+                <div className="grid gap-4 xl:grid-cols-[1.15fr,1fr]">
+                  <Card className={DESK_SURFACE_CLASS}>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <Radar className="h-4 w-4" />
+                        Live Gate Stack
+                      </CardTitle>
+                      <CardDescription>
+                        Live dispatch stays impossible by default and unresolved until a future executor exists.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-[18px] border border-border/80 bg-muted/25 p-3">
+                        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Mode</div>
+                        <div className="mt-2 text-lg font-semibold text-foreground">{data.runtimeConfig.mode}</div>
+                      </div>
+                      <div className="rounded-[18px] border border-border/80 bg-muted/25 p-3">
+                        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Live enabled</div>
+                        <div className="mt-2 text-lg font-semibold text-foreground">{String(data.runtimeConfig.liveEnabled)}</div>
+                      </div>
+                      <div className="rounded-[18px] border border-border/80 bg-muted/25 p-3">
+                        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Kill switch</div>
+                        <div className="mt-2 text-lg font-semibold text-foreground">{data.runtimeConfig.tradingKillSwitch ? "on" : "off"}</div>
+                      </div>
+                      <div className="rounded-[18px] border border-border/80 bg-muted/25 p-3">
+                        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Authenticated readiness</div>
+                        <div className="mt-2 text-lg font-semibold text-foreground">{readiness.authenticatedLiveReadiness}</div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className={DESK_SURFACE_CLASS}>
+                    <CardHeader>
+                      <CardTitle className="text-base">Current Runtime Outcome</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3 text-sm">
+                      <div className={`${INSET_SURFACE_CLASS} p-3 text-muted-foreground`}>
+                        Even with valid credentials present, the desk remains paper-first. A future live phase still needs explicit operator controls plus a real execution implementation.
+                      </div>
+                      <div className="flex items-center justify-between gap-4"><span>Validation mode</span><span className="font-medium">{readiness.validationMode}</span></div>
+                      <div className="flex items-center justify-between gap-4"><span>Last validation</span><span className="font-medium">{formatDate(readiness.lastValidation.checkedAt)}</span></div>
+                      <div className="flex items-center justify-between gap-4"><span>Last derivation attempt</span><span className="font-medium">{formatDate(readiness.lastDerivation.attemptedAt)}</span></div>
+                      <div className="flex items-center justify-between gap-4"><span>Live executor</span><span className="font-medium">Not implemented</span></div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </DeskSection>
+
+              <DeskSection
+                id="audit"
+                title="Audit"
+                description="Runtime-safe activity log for wallet refreshes, monitor runs, signal decisions, config changes, and auth checks."
+              >
+                <SectionTable
+                  empty="No Polymarket audit activity yet."
+                  headers={["Time", "Action", "Entity", "Actor", "Details"]}
+                  rows={data.auditLog.map((entry) => [
+                    formatDate(entry.createdAt),
+                    entry.action,
+                    `${entry.entityType}:${entry.entityId}`,
+                    `${entry.actorType}:${entry.actorId}`,
+                    <pre key="details" className="max-w-[28rem] overflow-x-auto whitespace-pre-wrap text-xs leading-5 text-muted-foreground">
+                      {JSON.stringify(entry.details ?? {}, null, 2)}
+                    </pre>,
+                  ])}
+                />
+              </DeskSection>
+            </main>
+          </div>
+        </div>
       </div>
     </div>
   );
