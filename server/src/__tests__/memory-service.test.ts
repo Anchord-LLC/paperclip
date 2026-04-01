@@ -6,6 +6,8 @@ import {
   createDb,
   memoryBindings,
   memoryOperations,
+  pluginState,
+  plugins,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -13,6 +15,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { memoryService } from "../services/memory.ts";
 
+const LOCAL_MEMORY_PLUGIN_KEY = "paperclip.memory.local";
 const sharedConnectionString = process.env.DATABASE_URL?.trim() || null;
 const embeddedPostgresSupport = sharedConnectionString
   ? { supported: true }
@@ -47,6 +50,7 @@ describeDatabaseBacked("memoryService", () => {
     for (const companyId of companyIdsToCleanup) {
       await db.delete(memoryOperations).where(eq(memoryOperations.companyId, companyId));
       await db.delete(memoryBindings).where(eq(memoryBindings.companyId, companyId));
+      await db.delete(pluginState).where(eq(pluginState.scopeId, companyId));
       await db.delete(companies).where(eq(companies.id, companyId));
     }
 
@@ -54,6 +58,7 @@ describeDatabaseBacked("memoryService", () => {
   });
 
   afterAll(async () => {
+    await db.delete(plugins).where(eq(plugins.pluginKey, LOCAL_MEMORY_PLUGIN_KEY));
     await tempDb?.cleanup();
   });
 
@@ -180,5 +185,90 @@ describeDatabaseBacked("memoryService", () => {
 
     expect(recentForCompany).toHaveLength(1);
     expect(recentForCompany[0]?.id).toBe(logged?.id);
+  });
+
+  it("writes, reads, queries, and logs memory through the local provider path", async () => {
+    const companyId = randomUUID();
+    companyIdsToCleanup.push(companyId);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const binding = await svc.createBinding({
+      companyId,
+      bindingKey: "default",
+      label: "Default Memory",
+      providerKey: "local",
+      namespace: "memory",
+      capabilities: { read: true, query: true, write: true },
+    });
+
+    expect(binding).toBeTruthy();
+
+    const written = await svc.writeMemory({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      namespace: "memory",
+      stateKey: "routing-standards",
+      content: "Use company routing rules for escalations and approvals.",
+      metadata: { source: "manual-note" },
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(written.stateKey).toBe("routing-standards");
+    expect(written.text).toContain("routing rules");
+    expect(written.handle.providerKey).toBe("local");
+
+    const readBack = await svc.readMemory({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      namespace: "memory",
+      stateKey: "routing-standards",
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(readBack?.stateKey).toBe("routing-standards");
+    expect(readBack?.text).toContain("routing rules");
+    expect(readBack?.metadata).toEqual({ source: "manual-note" });
+
+    const queried = await svc.queryMemory({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      namespace: "memory",
+      query: "routing approvals",
+      limit: 5,
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(queried.snippets).toHaveLength(1);
+    expect(queried.snippets[0]?.stateKey).toBe("routing-standards");
+    expect(queried.snippets[0]?.text).toContain("escalations");
+
+    const operations = await svc.listRecentOperations({
+      companyId,
+      bindingId: binding!.id,
+      limit: 10,
+    });
+
+    expect(operations).toHaveLength(3);
+    expect(operations.map((operation) => operation.operationType)).toEqual([
+      "query",
+      "read",
+      "write",
+    ]);
+    expect(operations.every((operation) => operation.status === "success")).toBe(true);
   });
 });

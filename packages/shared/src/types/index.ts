@@ -90,6 +90,7 @@ export type {
 export type { Goal } from "./goal.js";
 export type { Approval, ApprovalComment } from "./approval.js";
 export type {
+  MemoryProviderCapabilities,
   MemoryActorType,
   MemoryBinding,
   MemoryBindingStatus,
@@ -100,6 +101,12 @@ export type {
   UpdateMemoryBindingStatusInput,
   LogMemoryOperationInput,
   ListMemoryOperationsInput,
+  MemoryRecordHandle,
+  MemorySnippet,
+  MemoryWriteRequest,
+  MemoryReadRequest,
+  MemoryQueryRequest,
+  MemoryQueryResult,
 } from "./memory.js";
 export type {
   BudgetPolicy,
@@ -141,6 +148,30 @@ export type {
 } from "./heartbeat.js";
 export type { LiveEvent } from "./live.js";
 export type { DashboardSummary } from "./dashboard.js";
+export type {
+  PolymarketCopyMode,
+  PolymarketCopyCadence,
+  PolymarketCopyWorkerKey,
+  PolymarketCopyWalletStatus,
+  PolymarketCopyRunStatus,
+  PolymarketCopySignalAction,
+  PolymarketCopySignalDecision,
+  PolymarketCopyPaperTradeStatus,
+  PolymarketCopyRuntimeConfig,
+  PatchPolymarketCopyRuntimeConfig,
+  PolymarketCopyWalletComponentScores,
+  PolymarketCopyWalletSelectionRun,
+  PolymarketCopyWalletCandidate,
+  PolymarketCopyWatchedWallet,
+  PolymarketCopyWorkerRun,
+  PolymarketCopySignal,
+  PolymarketCopySignalDecisionRecord,
+  PolymarketCopyPaperTrade,
+  PolymarketCopyPaperTradeEvent,
+  PolymarketCopyDashboardOverview,
+  PolymarketCopyRiskSummary,
+  PolymarketCopyDashboardData,
+} from "./polymarket-copy.js";
 export type { ActivityEvent } from "./activity.js";
 export type { SidebarBadges } from "./sidebar-badges.js";
 export type {
