@@ -56,6 +56,18 @@ export { pluginEntities } from "./plugin_entities.js";
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export {
+  polymarketRuntimeConfigs,
+  polymarketWalletSelectionRuns,
+  polymarketWalletCandidates,
+  polymarketWatchedWallets,
+  polymarketWorkerRuns,
+  polymarketWalletSnapshots,
+  polymarketSignals,
+  polymarketSignalDecisions,
+  polymarketPaperTrades,
+  polymarketPaperTradeEvents,
+} from "./polymarket_copy.js";
 
 export * from "./memory_bindings.js";
 export * from "./memory_operations.js";

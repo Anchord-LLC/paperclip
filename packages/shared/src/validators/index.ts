@@ -217,6 +217,17 @@ export {
 } from "./finance.js";
 
 export {
+  polymarketCopyModeSchema,
+  polymarketCopyCadenceSchema,
+  polymarketCopySignalActionSchema,
+  polymarketCopySignalDecisionSchema,
+  patchPolymarketCopyRuntimeConfigSchema,
+  polymarketCopyDashboardActionSchema,
+  type PatchPolymarketCopyRuntimeConfig,
+  type PolymarketCopyDashboardAction,
+} from "./polymarket-copy.js";
+
+export {
   createAssetImageMetadataSchema,
   type CreateAssetImageMetadata,
 } from "./asset.js";

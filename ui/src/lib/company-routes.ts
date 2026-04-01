@@ -14,6 +14,8 @@ const BOARD_ROUTE_ROOTS = new Set([
   "usage",
   "activity",
   "inbox",
+  "desk",
+  "trading",
   "design-guide",
 ]);
 

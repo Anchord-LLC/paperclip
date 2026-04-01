@@ -375,6 +375,7 @@ function isSensitiveEnvKey(key: string) {
     normalized.includes("secret") ||
     normalized.includes("passwd") ||
     normalized.includes("password") ||
+    normalized.includes("passphrase") ||
     normalized.includes("credential") ||
     normalized.includes("jwt") ||
     normalized.includes("privatekey") ||

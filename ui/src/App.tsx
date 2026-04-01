@@ -37,6 +37,7 @@ import { PluginPage } from "./pages/PluginPage";
 import { RunTranscriptUxLab } from "./pages/RunTranscriptUxLab";
 import { OrgChart } from "./pages/OrgChart";
 import { NewAgent } from "./pages/NewAgent";
+import { PolymarketCopy } from "./pages/PolymarketCopy";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
@@ -163,6 +164,7 @@ function boardRoutes() {
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
       <Route path="costs" element={<Costs />} />
+      <Route path="trading/copy" element={<Navigate to="/desk/polymarket" replace />} />
       <Route path="activity" element={<Activity />} />
       <Route path="inbox" element={<InboxRootRedirect />} />
       <Route path="inbox/mine" element={<Inbox />} />
@@ -336,12 +338,15 @@ export function App() {
           <Route path="projects/:projectId" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/overview" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/issues" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/issues/:filter" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
-          <Route path="tests/ux/runs" element={<UnprefixedBoardRedirect />} />
-          <Route path=":companyPrefix" element={<Layout />}>
-            {boardRoutes()}
-          </Route>
+        <Route path="projects/:projectId/issues/:filter" element={<UnprefixedBoardRedirect />} />
+        <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
+        <Route path="desk/polymarket" element={<UnprefixedBoardRedirect />} />
+        <Route path="trading/copy" element={<Navigate to="/desk/polymarket" replace />} />
+        <Route path="tests/ux/runs" element={<UnprefixedBoardRedirect />} />
+        <Route path=":companyPrefix/desk/polymarket" element={<PolymarketCopy />} />
+        <Route path=":companyPrefix" element={<Layout />}>
+          {boardRoutes()}
+        </Route>
           <Route path="*" element={<NotFoundPage scope="global" />} />
         </Route>
       </Routes>

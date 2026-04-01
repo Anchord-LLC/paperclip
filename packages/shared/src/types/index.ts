@@ -90,7 +90,6 @@ export type {
 export type { Goal } from "./goal.js";
 export type { Approval, ApprovalComment } from "./approval.js";
 export type {
-  MemoryProviderCapabilities,
   MemoryActorType,
   MemoryBinding,
   MemoryBindingStatus,
@@ -101,12 +100,6 @@ export type {
   UpdateMemoryBindingStatusInput,
   LogMemoryOperationInput,
   ListMemoryOperationsInput,
-  MemoryRecordHandle,
-  MemorySnippet,
-  MemoryWriteRequest,
-  MemoryReadRequest,
-  MemoryQueryRequest,
-  MemoryQueryResult,
 } from "./memory.js";
 export type {
   BudgetPolicy,
@@ -157,6 +150,9 @@ export type {
   PolymarketCopySignalAction,
   PolymarketCopySignalDecision,
   PolymarketCopyPaperTradeStatus,
+  PolymarketAuthEnvKey,
+  PolymarketAuthReadinessResult,
+  PolymarketAuthDerivationResult,
   PolymarketCopyRuntimeConfig,
   PatchPolymarketCopyRuntimeConfig,
   PolymarketCopyWalletComponentScores,
@@ -170,6 +166,15 @@ export type {
   PolymarketCopyPaperTradeEvent,
   PolymarketCopyDashboardOverview,
   PolymarketCopyRiskSummary,
+  PolymarketCopyAuthKeyStatus,
+  PolymarketCopyAuthValidationStatus,
+  PolymarketCopyAuthDerivationStatus,
+  PolymarketCopyAuthReadiness,
+  PolymarketCopyDeriveApiCredentialsResult,
+  PolymarketCopyUnderlyingOwner,
+  PolymarketCopyUnderlyingAgentSummary,
+  PolymarketCopyUnderlyingRuntimeService,
+  PolymarketCopyUnderlyingModel,
   PolymarketCopyDashboardData,
 } from "./polymarket-copy.js";
 export type { ActivityEvent } from "./activity.js";

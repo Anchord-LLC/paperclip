@@ -1,0 +1,364 @@
+import {
+  boolean,
+  doublePrecision,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
+import type { AgentEnvConfig } from "@paperclipai/shared";
+import { companies } from "./companies.js";
+
+export const polymarketRuntimeConfigs = pgTable(
+  "polymarket_runtime_configs",
+  {
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    mode: text("mode").notNull().default("paper"),
+    liveEnabled: boolean("live_enabled").notNull().default(false),
+    tradingKillSwitch: boolean("trading_kill_switch").notNull().default(true),
+    walletSelectionEnabled: boolean("wallet_selection_enabled").notNull().default(true),
+    walletSelectionTimeZone: text("wallet_selection_time_zone").notNull().default("UTC"),
+    walletSelectionHour: integer("wallet_selection_hour").notNull().default(9),
+    walletSelectionMinute: integer("wallet_selection_minute").notNull().default(0),
+    selectorMaxCandidates: integer("selector_max_candidates").notNull().default(25),
+    targetWatchedWalletCount: integer("target_watched_wallet_count").notNull().default(10),
+    targetBenchWalletCount: integer("target_bench_wallet_count").notNull().default(10),
+    maxDailyReplacements: integer("max_daily_replacements").notNull().default(2),
+    selectorReplacementScoreDelta: doublePrecision("selector_replacement_score_delta").notNull().default(0.08),
+    efficiencyWeight: doublePrecision("efficiency_weight").notNull().default(0.35),
+    consistencyWeight: doublePrecision("consistency_weight").notNull().default(0.2),
+    diversificationWeight: doublePrecision("diversification_weight").notNull().default(0.2),
+    recencyWeight: doublePrecision("recency_weight").notNull().default(0.15),
+    concentrationPenaltyWeight: doublePrecision("concentration_penalty_weight").notNull().default(0.1),
+    minWalletScore: doublePrecision("min_wallet_score").notNull().default(0.45),
+    minSignalMateriality: doublePrecision("min_signal_materiality").notNull().default(250),
+    maxSpreadBps: integer("max_spread_bps").notNull().default(800),
+    staleSignalThresholdMinutes: integer("stale_signal_threshold_minutes").notNull().default(30),
+    maxExposurePerMarket: doublePrecision("max_exposure_per_market").notNull().default(5_000),
+    maxTotalOpenPaperExposure: doublePrecision("max_total_open_paper_exposure").notNull().default(20_000),
+    maxOpenSimulatedPositions: integer("max_open_simulated_positions").notNull().default(30),
+    maxDailySimulatedLoss: doublePrecision("max_daily_simulated_loss").notNull().default(2_000),
+    monitor5mEnabled: boolean("monitor_5m_enabled").notNull().default(true),
+    monitor15mEnabled: boolean("monitor_15m_enabled").notNull().default(true),
+    monitor5mIntervalMinutes: integer("monitor_5m_interval_minutes").notNull().default(5),
+    monitor15mIntervalMinutes: integer("monitor_15m_interval_minutes").notNull().default(15),
+    paperTradeUsdPerSignal: doublePrecision("paper_trade_usd_per_signal").notNull().default(250),
+    artifactRootPath: text("artifact_root_path"),
+    authEnvJson: jsonb("auth_env_json").$type<AgentEnvConfig | null>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.companyId], name: "polymarket_runtime_configs_pk" }),
+  }),
+);
+
+export const polymarketWalletSelectionRuns = pgTable(
+  "polymarket_wallet_selection_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("running"),
+    candidateCount: integer("candidate_count").notNull().default(0),
+    activeCount: integer("active_count").notNull().default(0),
+    benchCount: integer("bench_count").notNull().default(0),
+    replacementCount: integer("replacement_count").notNull().default(0),
+    summaryJson: jsonb("summary_json").$type<Record<string, unknown> | null>(),
+    error: text("error"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyStartedIdx: index("polymarket_wallet_selection_runs_company_started_idx").on(
+      table.companyId,
+      table.startedAt,
+    ),
+  }),
+);
+
+export const polymarketWalletCandidates = pgTable(
+  "polymarket_wallet_candidates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    selectionRunId: uuid("selection_run_id")
+      .notNull()
+      .references(() => polymarketWalletSelectionRuns.id, { onDelete: "cascade" }),
+    walletAddress: text("wallet_address").notNull(),
+    label: text("label"),
+    source: text("source").notNull().default("data_api_leaderboard"),
+    leaderboardRank: integer("leaderboard_rank"),
+    rank: integer("rank"),
+    status: text("status").notNull().default("rejected"),
+    eligible: boolean("eligible").notNull().default(true),
+    eligibilityReasons: jsonb("eligibility_reasons").$type<string[] | null>(),
+    volume: doublePrecision("volume"),
+    pnl: doublePrecision("pnl"),
+    openMarketCount: integer("open_market_count").notNull().default(0),
+    closedMarketCount: integer("closed_market_count").notNull().default(0),
+    recentTradeCount: integer("recent_trade_count").notNull().default(0),
+    recentTradeAt: timestamp("recent_trade_at", { withTimezone: true }),
+    concentrationRatio: doublePrecision("concentration_ratio"),
+    compositeScore: doublePrecision("composite_score").notNull().default(0),
+    efficiencyScore: doublePrecision("efficiency_score").notNull().default(0),
+    consistencyScore: doublePrecision("consistency_score").notNull().default(0),
+    diversificationScore: doublePrecision("diversification_score").notNull().default(0),
+    recencyScore: doublePrecision("recency_score").notNull().default(0),
+    concentrationPenaltyScore: doublePrecision("concentration_penalty_score").notNull().default(0),
+    snapshotJson: jsonb("snapshot_json").$type<Record<string, unknown> | null>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    selectionWalletUq: uniqueIndex("polymarket_wallet_candidates_selection_wallet_uq").on(
+      table.selectionRunId,
+      table.walletAddress,
+    ),
+    companySelectionRankIdx: index("polymarket_wallet_candidates_company_selection_rank_idx").on(
+      table.companyId,
+      table.selectionRunId,
+      table.rank,
+    ),
+    companyWalletIdx: index("polymarket_wallet_candidates_company_wallet_idx").on(
+      table.companyId,
+      table.walletAddress,
+    ),
+  }),
+);
+
+export const polymarketWatchedWallets = pgTable(
+  "polymarket_watched_wallets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    walletAddress: text("wallet_address").notNull(),
+    label: text("label"),
+    status: text("status").notNull().default("bench"),
+    sourceSelectionRunId: uuid("source_selection_run_id").references(() => polymarketWalletSelectionRuns.id, {
+      onDelete: "set null",
+    }),
+    currentRank: integer("current_rank"),
+    score: doublePrecision("score").notNull().default(0),
+    efficiencyScore: doublePrecision("efficiency_score").notNull().default(0),
+    consistencyScore: doublePrecision("consistency_score").notNull().default(0),
+    diversificationScore: doublePrecision("diversification_score").notNull().default(0),
+    recencyScore: doublePrecision("recency_score").notNull().default(0),
+    concentrationPenaltyScore: doublePrecision("concentration_penalty_score").notNull().default(0),
+    concentrationRatio: doublePrecision("concentration_ratio"),
+    lastRefreshedAt: timestamp("last_refreshed_at", { withTimezone: true }).notNull().defaultNow(),
+    activatedAt: timestamp("activated_at", { withTimezone: true }),
+    replacedAt: timestamp("replaced_at", { withTimezone: true }),
+    metadataJson: jsonb("metadata_json").$type<Record<string, unknown> | null>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyWalletUq: uniqueIndex("polymarket_watched_wallets_company_wallet_uq").on(
+      table.companyId,
+      table.walletAddress,
+    ),
+    companyStatusRankIdx: index("polymarket_watched_wallets_company_status_rank_idx").on(
+      table.companyId,
+      table.status,
+      table.currentRank,
+    ),
+  }),
+);
+
+export const polymarketWorkerRuns = pgTable(
+  "polymarket_worker_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    workerKey: text("worker_key").notNull(),
+    cadence: text("cadence"),
+    status: text("status").notNull().default("running"),
+    walletCount: integer("wallet_count").notNull().default(0),
+    signalCount: integer("signal_count").notNull().default(0),
+    acceptedCount: integer("accepted_count").notNull().default(0),
+    skippedCount: integer("skipped_count").notNull().default(0),
+    blockedCount: integer("blocked_count").notNull().default(0),
+    detailsJson: jsonb("details_json").$type<Record<string, unknown> | null>(),
+    error: text("error"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyWorkerStartedIdx: index("polymarket_worker_runs_company_worker_started_idx").on(
+      table.companyId,
+      table.workerKey,
+      table.startedAt,
+    ),
+  }),
+);
+
+export const polymarketWalletSnapshots = pgTable(
+  "polymarket_wallet_snapshots",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    workerRunId: uuid("worker_run_id").references(() => polymarketWorkerRuns.id, { onDelete: "set null" }),
+    walletAddress: text("wallet_address").notNull(),
+    cadence: text("cadence"),
+    sourceFetchedAt: timestamp("source_fetched_at", { withTimezone: true }),
+    latestActivityAt: timestamp("latest_activity_at", { withTimezone: true }),
+    positionsCount: integer("positions_count").notNull().default(0),
+    openExposureUsd: doublePrecision("open_exposure_usd").notNull().default(0),
+    positionsJson: jsonb("positions_json").$type<Record<string, unknown>[] | null>(),
+    tradesJson: jsonb("trades_json").$type<Record<string, unknown>[] | null>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyWalletCadenceCreatedIdx: index("polymarket_wallet_snapshots_company_wallet_cadence_created_idx").on(
+      table.companyId,
+      table.walletAddress,
+      table.cadence,
+      table.createdAt,
+    ),
+  }),
+);
+
+export const polymarketSignals = pgTable(
+  "polymarket_signals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    workerRunId: uuid("worker_run_id").references(() => polymarketWorkerRuns.id, { onDelete: "set null" }),
+    walletSnapshotId: uuid("wallet_snapshot_id").references(() => polymarketWalletSnapshots.id, {
+      onDelete: "set null",
+    }),
+    sourceWalletAddress: text("source_wallet_address").notNull(),
+    watchedWalletId: uuid("watched_wallet_id").references(() => polymarketWatchedWallets.id, {
+      onDelete: "set null",
+    }),
+    walletScore: doublePrecision("wallet_score"),
+    marketId: text("market_id").notNull(),
+    marketSlug: text("market_slug"),
+    marketTitle: text("market_title"),
+    assetId: text("asset_id"),
+    action: text("action").notNull(),
+    side: text("side"),
+    sizeDelta: doublePrecision("size_delta"),
+    previousSize: doublePrecision("previous_size"),
+    currentSize: doublePrecision("current_size"),
+    materialityUsd: doublePrecision("materiality_usd"),
+    detectionTimestamp: timestamp("detection_timestamp", { withTimezone: true }).notNull().defaultNow(),
+    sourceSnapshotTimestamp: timestamp("source_snapshot_timestamp", { withTimezone: true }),
+    cadence: text("cadence").notNull(),
+    rawMetadataJson: jsonb("raw_metadata_json").$type<Record<string, unknown> | null>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyCreatedIdx: index("polymarket_signals_company_created_idx").on(table.companyId, table.createdAt),
+    companyMarketCreatedIdx: index("polymarket_signals_company_market_created_idx").on(
+      table.companyId,
+      table.marketId,
+      table.createdAt,
+    ),
+    companyWalletCreatedIdx: index("polymarket_signals_company_wallet_created_idx").on(
+      table.companyId,
+      table.sourceWalletAddress,
+      table.createdAt,
+    ),
+  }),
+);
+
+export const polymarketSignalDecisions = pgTable(
+  "polymarket_signal_decisions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    signalId: uuid("signal_id").notNull().references(() => polymarketSignals.id, { onDelete: "cascade" }),
+    decision: text("decision").notNull(),
+    reasonCode: text("reason_code").notNull(),
+    reasonDetail: text("reason_detail"),
+    governorSnapshotJson: jsonb("governor_snapshot_json").$type<Record<string, unknown> | null>(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    signalUq: uniqueIndex("polymarket_signal_decisions_signal_uq").on(table.signalId),
+    companyDecisionCreatedIdx: index("polymarket_signal_decisions_company_decision_created_idx").on(
+      table.companyId,
+      table.decision,
+      table.createdAt,
+    ),
+  }),
+);
+
+export const polymarketPaperTrades = pgTable(
+  "polymarket_paper_trades",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    sourceWalletAddress: text("source_wallet_address").notNull(),
+    signalId: uuid("signal_id").references(() => polymarketSignals.id, { onDelete: "set null" }),
+    marketId: text("market_id").notNull(),
+    marketSlug: text("market_slug"),
+    marketTitle: text("market_title"),
+    assetId: text("asset_id"),
+    side: text("side").notNull(),
+    status: text("status").notNull().default("open"),
+    quantity: doublePrecision("quantity").notNull().default(0),
+    notionalUsd: doublePrecision("notional_usd").notNull().default(0),
+    estimatedEntryPrice: doublePrecision("estimated_entry_price"),
+    currentMarkPrice: doublePrecision("current_mark_price"),
+    realizedPnlUsd: doublePrecision("realized_pnl_usd").notNull().default(0),
+    unrealizedPnlUsd: doublePrecision("unrealized_pnl_usd").notNull().default(0),
+    sourceToCopyDelayMs: integer("source_to_copy_delay_ms"),
+    assumptionNote: text("assumption_note"),
+    metadataJson: jsonb("metadata_json").$type<Record<string, unknown> | null>(),
+    openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    lastUpdatedAt: timestamp("last_updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyStatusUpdatedIdx: index("polymarket_paper_trades_company_status_updated_idx").on(
+      table.companyId,
+      table.status,
+      table.lastUpdatedAt,
+    ),
+    companyWalletMarketStatusIdx: index("polymarket_paper_trades_company_wallet_market_status_idx").on(
+      table.companyId,
+      table.sourceWalletAddress,
+      table.marketId,
+      table.side,
+      table.status,
+    ),
+  }),
+);
+
+export const polymarketPaperTradeEvents = pgTable(
+  "polymarket_paper_trade_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    paperTradeId: uuid("paper_trade_id").notNull().references(() => polymarketPaperTrades.id, {
+      onDelete: "cascade",
+    }),
+    signalId: uuid("signal_id").references(() => polymarketSignals.id, { onDelete: "set null" }),
+    eventType: text("event_type").notNull(),
+    quantityDelta: doublePrecision("quantity_delta"),
+    price: doublePrecision("price"),
+    realizedPnlUsd: doublePrecision("realized_pnl_usd"),
+    unrealizedPnlUsd: doublePrecision("unrealized_pnl_usd"),
+    assumptionsJson: jsonb("assumptions_json").$type<Record<string, unknown> | null>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyTradeCreatedIdx: index("polymarket_paper_trade_events_company_trade_created_idx").on(
+      table.companyId,
+      table.paperTradeId,
+      table.createdAt,
+    ),
+  }),
+);

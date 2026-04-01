@@ -97,6 +97,10 @@ export const queryKeys = {
     providers: (companyId: string) => ["secret-providers", companyId] as const,
   },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
+  polymarketCopy: {
+    dashboard: (companyId: string) => ["polymarket-copy", companyId, "dashboard"] as const,
+    runtimeConfig: (companyId: string) => ["polymarket-copy", companyId, "runtime-config"] as const,
+  },
   sidebarBadges: (companyId: string) => ["sidebar-badges", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,
   costs: (companyId: string, from?: string, to?: string) =>

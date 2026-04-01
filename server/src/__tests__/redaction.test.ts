@@ -11,6 +11,9 @@ describe("redaction", () => {
       },
       env: {
         OPENAI_API_KEY: "sk-openai",
+        POLYMARKET_PRIVATE_KEY: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        POLYMARKET_API_SECRET: "pm-secret",
+        POLYMARKET_API_PASSPHRASE: "pm-passphrase",
         OPENAI_API_KEY_REF: {
           type: "secret_ref",
           secretId: "11111111-1111-1111-1111-111111111111",
@@ -32,6 +35,9 @@ describe("redaction", () => {
     });
     expect(result.env).toEqual({
       OPENAI_API_KEY: REDACTED_EVENT_VALUE,
+      POLYMARKET_PRIVATE_KEY: REDACTED_EVENT_VALUE,
+      POLYMARKET_API_SECRET: REDACTED_EVENT_VALUE,
+      POLYMARKET_API_PASSPHRASE: REDACTED_EVENT_VALUE,
       OPENAI_API_KEY_REF: {
         type: "secret_ref",
         secretId: "11111111-1111-1111-1111-111111111111",
