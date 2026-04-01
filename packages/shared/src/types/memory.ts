@@ -1,0 +1,89 @@
+import type { PluginStateScopeKind } from "../constants.js";
+
+export type MemoryBindingStatus = "active" | "disabled";
+export type MemoryScopeKind = PluginStateScopeKind;
+export type MemoryActorType = "agent" | "user" | "system";
+
+export interface MemoryBinding {
+  id: string;
+  companyId: string;
+  bindingKey: string;
+  label: string;
+  providerKey: string;
+  pluginId: string | null;
+  namespace: string;
+  status: string;
+  config: Record<string, unknown>;
+  capabilities: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+  disabledAt: Date | null;
+}
+
+export interface MemoryOperation {
+  id: string;
+  companyId: string;
+  bindingId: string;
+  operationType: string;
+  status: string;
+  scopeKind: string;
+  scopeId: string | null;
+  namespace: string;
+  stateKey: string | null;
+  actorType: string;
+  actorId: string | null;
+  request: Record<string, unknown>;
+  response: Record<string, unknown>;
+  usage: Record<string, unknown>;
+  error: Record<string, unknown> | null;
+  durationMs: number | null;
+  createdAt: Date;
+}
+
+export interface ResolveMemoryBindingInput {
+  companyId: string;
+  bindingKey: string;
+  activeOnly?: boolean;
+}
+
+export interface CreateMemoryBindingInput {
+  companyId: string;
+  bindingKey: string;
+  label: string;
+  providerKey: string;
+  pluginId?: string | null;
+  namespace?: string;
+  status?: MemoryBindingStatus;
+  config?: Record<string, unknown>;
+  capabilities?: Record<string, unknown>;
+}
+
+export interface UpdateMemoryBindingStatusInput {
+  companyId: string;
+  bindingId: string;
+  status: MemoryBindingStatus;
+}
+
+export interface LogMemoryOperationInput {
+  companyId: string;
+  bindingId: string;
+  operationType: string;
+  status: string;
+  scopeKind: MemoryScopeKind;
+  scopeId?: string | null;
+  namespace?: string;
+  stateKey?: string | null;
+  actorType: MemoryActorType;
+  actorId?: string | null;
+  request?: Record<string, unknown>;
+  response?: Record<string, unknown>;
+  usage?: Record<string, unknown>;
+  error?: Record<string, unknown> | null;
+  durationMs?: number | null;
+}
+
+export interface ListMemoryOperationsInput {
+  companyId: string;
+  bindingId?: string;
+  limit?: number;
+}

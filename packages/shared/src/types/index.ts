@@ -90,6 +90,18 @@ export type {
 export type { Goal } from "./goal.js";
 export type { Approval, ApprovalComment } from "./approval.js";
 export type {
+  MemoryActorType,
+  MemoryBinding,
+  MemoryBindingStatus,
+  MemoryOperation,
+  MemoryScopeKind,
+  ResolveMemoryBindingInput,
+  CreateMemoryBindingInput,
+  UpdateMemoryBindingStatusInput,
+  LogMemoryOperationInput,
+  ListMemoryOperationsInput,
+} from "./memory.js";
+export type {
   BudgetPolicy,
   BudgetPolicySummary,
   BudgetIncident,
