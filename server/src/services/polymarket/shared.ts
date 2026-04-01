@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type {
   AgentEnvConfig,
   PatchPolymarketCopyRuntimeConfig,
@@ -18,6 +19,23 @@ export const POLYMARKET_AUTH_ENV_KEYS = [
   "POLYMARKET_FUNDER_ADDRESS",
 ] as const;
 export const POLYMARKET_REQUIRED_LIVE_AUTH_ENV_KEYS = [...POLYMARKET_AUTH_ENV_KEYS];
+
+const LEGACY_POLYMARKET_ARTIFACT_ROOT = "/mnt/ssd/paperclip/projects/polymarket";
+
+function defaultPolymarketArtifactRoot(): string {
+  const configuredRoot = process.env.POLYMARKET_PROJECT_ROOT?.trim();
+  if (configuredRoot) return configuredRoot;
+  const paperclipHome = process.env.PAPERCLIP_HOME?.trim() || "/paperclip";
+  return join(paperclipHome, "projects", "polymarket");
+}
+
+export function normalizePolymarketArtifactRootPath(artifactRootPath: string | null | undefined): string | null {
+  if (artifactRootPath == null) return null;
+  const trimmed = artifactRootPath.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed === LEGACY_POLYMARKET_ARTIFACT_ROOT) return defaultPolymarketArtifactRoot();
+  return trimmed;
+}
 
 export interface PolymarketCopyDefaults {
   mode: PolymarketCopyMode;
@@ -112,7 +130,7 @@ export function getPolymarketCopyDefaults(): PolymarketCopyDefaults {
     monitor5mIntervalMinutes: 5,
     monitor15mIntervalMinutes: 15,
     paperTradeUsdPerSignal: 250,
-    artifactRootPath: process.env.POLYMARKET_PROJECT_ROOT ?? "/mnt/ssd/paperclip/projects/polymarket",
+    artifactRootPath: defaultPolymarketArtifactRoot(),
     authEnv: null,
   };
 }

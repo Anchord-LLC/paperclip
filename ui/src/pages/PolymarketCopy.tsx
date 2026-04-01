@@ -632,10 +632,18 @@ export function PolymarketCopy() {
   const directOwnerLabel = data.underlyingModel.directOwners
     .map((owner) => owner.name ?? owner.email ?? owner.userId)
     .join(", ") || "Unassigned";
-  const ceoAgentLabel = data.underlyingModel.ceoAgent?.name ?? "None";
   const tradingAnalystLabel = data.underlyingModel.tradingAnalyst?.name ?? "Not provisioned";
   const managedServices = data.underlyingModel.runtimeServices;
   const provisionedServiceCount = managedServices.filter((service) => service.exists).length;
+  const serviceByKey = new Map(managedServices.map((service) => [service.key, service] as const));
+  const monitor5mService = serviceByKey.get("monitor_5m") ?? null;
+  const monitor15mService = serviceByKey.get("monitor_15m") ?? null;
+  const riskGovernorService = serviceByKey.get("risk_governor") ?? null;
+  const executionEngineService = serviceByKey.get("execution_engine") ?? null;
+  const paperExecutorLabel = data.runtimeConfig.mode === "paper"
+    ? `active at ${formatUsd(data.runtimeConfig.paperTradeUsdPerSignal)} per signal`
+    : "inactive";
+  const liveExecutorLabel = "dormant / blocked";
 
   return (
     <div
@@ -660,11 +668,11 @@ export function PolymarketCopy() {
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Badge variant="secondary">Direct Owner: {directOwnerLabel}</Badge>
-                <Badge variant="outline">CEO Agent: {ceoAgentLabel}</Badge>
-                <Badge variant="outline">Desk Model: Company Runtime</Badge>
+                <Badge variant="secondary">Owner: {directOwnerLabel}</Badge>
+                <Badge variant="outline">Primary Workers: 5m + 15m monitors</Badge>
+                <Badge variant="outline">Shared Pipeline: normalize -&gt; risk -&gt; execution</Badge>
+                <Badge variant="outline">Support Agent: {data.underlyingModel.tradingAnalyst ? tradingAnalystLabel : "none"}</Badge>
                 <Badge variant="outline">Company: {companyLabel}</Badge>
-                <Badge variant="outline">Desk: {companyPrefixLabel}</Badge>
               </div>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -741,12 +749,20 @@ export function PolymarketCopy() {
                   </Badge>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <span>5m worker</span>
+                  <span>5m Monitor</span>
                   <Badge variant={toneForHealth(health5m)}>{health5m}</Badge>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <span>15m worker</span>
+                  <span>15m Monitor</span>
                   <Badge variant={toneForHealth(health15m)}>{health15m}</Badge>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span>Paper executor</span>
+                  <Badge variant="secondary">{paperExecutorLabel}</Badge>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span>Live executor</span>
+                  <Badge variant="destructive">{liveExecutorLabel}</Badge>
                 </div>
               </div>
             </div>
@@ -781,7 +797,7 @@ export function PolymarketCopy() {
                   <div className="space-y-2">
                     <h2 className="text-2xl font-semibold tracking-tight">Polymarket Desk</h2>
                     <p className="max-w-2xl text-sm text-muted-foreground">
-                      This operator dashboard is a separate product surface on top of Paperclip runtime governance. Wallet tracking, signal generation, risk checks, paper simulation, and auth readiness all flow through the same backend engine.
+                      Two primary runtime workers, the 5m Monitor and 15m Monitor, feed a shared signal-normalization, risk-governor, and execution-engine pipeline. Paper execution is active now, while live execution remains dormant and blocked.
                     </p>
                   </div>
 
@@ -791,21 +807,13 @@ export function PolymarketCopy() {
 
               <Card className="rounded-3xl border-border bg-background/92 shadow-sm">
                 <CardHeader>
-                  <CardTitle className="text-base">Desk Identity</CardTitle>
-                  <CardDescription>Product surface for desk operators, with Paperclip behind it as the governed engine.</CardDescription>
+                  <CardTitle className="text-base">Operating Model</CardTitle>
+                  <CardDescription>Two active monitor workers feed one shared deterministic pipeline. Trading Analyst is optional support, not part of the execution chain.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4 text-sm">
                   <div className="flex items-center justify-between gap-4">
-                    <span>Direct owner</span>
+                    <span>Owner</span>
                     <span className="text-right font-medium">{directOwnerLabel}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <span>CEO agent</span>
-                    <span className="font-medium">{ceoAgentLabel}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <span>Trading Analyst</span>
-                    <span className="font-medium">{tradingAnalystLabel}</span>
                   </div>
                   <div className="flex items-center justify-between gap-4">
                     <span>Desk model</span>
@@ -816,46 +824,91 @@ export function PolymarketCopy() {
                     <span className="font-medium">{data.underlyingModel.hasSeparateDeskObject ? "Yes" : "No"}</span>
                   </div>
                   <div className="flex items-center justify-between gap-4">
-                    <span>Company</span>
-                    <span className="font-medium">{companyLabel}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <span>Control Plane</span>
-                    <span className="font-medium">Paperclip backend</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
                     <span>Watched wallets</span>
                     <span className="font-medium">{data.overview.watchedWalletCount}</span>
                   </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <span>Bench wallets</span>
-                    <span className="font-medium">{data.overview.benchCount}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <span>Signals today</span>
-                    <span className="font-medium">{data.overview.signalsToday}</span>
-                  </div>
                   <div className="rounded-2xl border border-border bg-muted/20 p-3">
                     <div className="flex items-center justify-between gap-3">
-                      <span className="font-medium">Managed desk services</span>
-                      <Badge variant={provisionedServiceCount === managedServices.length ? "secondary" : "outline"}>
-                        {provisionedServiceCount}/{managedServices.length} provisioned
+                      <span className="font-medium">Primary workers</span>
+                      <Badge variant={monitor5mService?.exists && monitor15mService?.exists ? "secondary" : "outline"}>
+                        {(monitor5mService?.exists ? 1 : 0) + (monitor15mService?.exists ? 1 : 0)}/2 real
                       </Badge>
                     </div>
                     <div className="mt-3 space-y-2">
-                      {managedServices.map((service) => (
-                        <div key={service.key} className="flex items-center justify-between gap-3">
-                          <span>{service.serviceName}</span>
-                          <div className="flex flex-wrap gap-2">
-                            <Badge variant={service.exists ? "secondary" : "outline"}>
-                              {service.exists ? "real" : "missing"}
-                            </Badge>
-                            {service.exists && (
-                              <Badge variant="outline">{service.status ?? "unknown"}</Badge>
-                            )}
-                          </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <span>Polymarket 5m Monitor</span>
+                        <div className="flex flex-wrap gap-2">
+                          <Badge variant={monitor5mService?.exists ? "secondary" : "outline"}>
+                            {monitor5mService?.exists ? "real" : "missing"}
+                          </Badge>
+                          <Badge variant={toneForHealth(health5m)}>{health5m}</Badge>
                         </div>
-                      ))}
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <span>Polymarket 15m Monitor</span>
+                        <div className="flex flex-wrap gap-2">
+                          <Badge variant={monitor15mService?.exists ? "secondary" : "outline"}>
+                            {monitor15mService?.exists ? "real" : "missing"}
+                          </Badge>
+                          <Badge variant={toneForHealth(health15m)}>{health15m}</Badge>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-border bg-muted/20 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-medium">Shared pipeline</span>
+                      <Badge variant={provisionedServiceCount === managedServices.length ? "secondary" : "outline"}>
+                        {provisionedServiceCount}/{managedServices.length} runtime services real
+                      </Badge>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <span>Signal normalization</span>
+                        <Badge variant="outline">deterministic logic</Badge>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <span>Risk Governor</span>
+                        <div className="flex flex-wrap gap-2">
+                          <Badge variant={riskGovernorService?.exists ? "secondary" : "outline"}>
+                            {riskGovernorService?.exists ? "real" : "missing"}
+                          </Badge>
+                          {riskGovernorService?.exists && (
+                            <Badge variant="outline">{riskGovernorService.status ?? "unknown"}</Badge>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <span>Execution Engine</span>
+                        <div className="flex flex-wrap gap-2">
+                          <Badge variant={executionEngineService?.exists ? "secondary" : "outline"}>
+                            {executionEngineService?.exists ? "real" : "missing"}
+                          </Badge>
+                          {executionEngineService?.exists && (
+                            <Badge variant="outline">{executionEngineService.status ?? "unknown"}</Badge>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <span>Paper executor</span>
+                        <Badge variant="secondary">{paperExecutorLabel}</Badge>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <span>Live executor</span>
+                        <Badge variant="destructive">{liveExecutorLabel}</Badge>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-border bg-muted/20 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-medium">Optional support</span>
+                      <Badge variant={data.underlyingModel.tradingAnalyst ? "outline" : "secondary"}>
+                        {data.underlyingModel.tradingAnalyst ? "enabled" : "not provisioned"}
+                      </Badge>
+                    </div>
+                    <div className="mt-3 flex items-center justify-between gap-4">
+                      <span>Trading Analyst</span>
+                      <span className="text-right font-medium">{tradingAnalystLabel}</span>
                     </div>
                   </div>
                 </CardContent>
@@ -963,7 +1016,7 @@ export function PolymarketCopy() {
           <DeskSection
             id="worker-status"
             title="Worker Status"
-            description="Dual-cadence worker health, recent runs, and selection cadence visibility."
+            description="The 5m and 15m monitors are the only active workers. Everything else is shared support logic behind the same execution path."
           >
             <div className="grid gap-4 xl:grid-cols-3">
               {[
@@ -978,12 +1031,6 @@ export function PolymarketCopy() {
                   label: "15m Monitor",
                   health: health15m,
                   lastSuccess: data.overview.lastSuccessful15mRun,
-                },
-                {
-                  workerKey: "wallet-selector-daily",
-                  label: "Wallet Selector",
-                  health: data.overview.workerHealth["wallet-selector-daily"] ?? "idle",
-                  lastSuccess: latestWorkerRuns.get("wallet-selector-daily")?.finishedAt ?? null,
                 },
               ].map((worker) => {
                 const run = latestWorkerRuns.get(worker.workerKey);
@@ -1016,6 +1063,44 @@ export function PolymarketCopy() {
                   </Card>
                 );
               })}
+              <Card className="rounded-2xl border-border bg-background/90 shadow-sm">
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center justify-between gap-2 text-base">
+                    <span>Shared Pipeline</span>
+                    <Badge variant="outline">support logic</Badge>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span>Signal normalization</span>
+                    <span className="font-medium">deterministic</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Risk Governor</span>
+                    <span className="font-medium">{riskGovernorService?.status ?? (riskGovernorService?.exists ? "registered" : "missing")}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Execution Engine</span>
+                    <span className="font-medium">{executionEngineService?.status ?? (executionEngineService?.exists ? "registered" : "missing")}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Paper executor</span>
+                    <span className="font-medium">{paperExecutorLabel}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Live executor</span>
+                    <span className="font-medium">{liveExecutorLabel}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Signals today</span>
+                    <span className="font-medium">{data.overview.signalsToday}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Open paper trades</span>
+                    <span className="font-medium">{data.overview.paperTradesOpen}</span>
+                  </div>
+                </CardContent>
+              </Card>
             </div>
           </DeskSection>
 

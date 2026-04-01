@@ -58,6 +58,7 @@ import {
   cadenceToWorkerKey,
   getPolymarketCopyDefaults,
   mergeRuntimeConfigPatch,
+  normalizePolymarketArtifactRootPath,
   normalizeWalletAddress,
   safeDate,
   shouldRunDaily,
@@ -196,10 +197,11 @@ async function mapWithConcurrency<TInput, TOutput>(
 function runtimeConfigFromRow(
   row: typeof polymarketRuntimeConfigs.$inferSelect,
 ): PolymarketCopyRuntimeConfig {
-  const { authEnvJson, ...rest } = row;
+  const { authEnvJson, artifactRootPath, ...rest } = row;
   return {
     ...rest,
     mode: row.mode as PolymarketCopyRuntimeConfig["mode"],
+    artifactRootPath: normalizePolymarketArtifactRootPath(artifactRootPath),
     authEnv: (authEnvJson ?? null) as AgentEnvConfig | null,
   };
 }
