@@ -67,6 +67,7 @@ export {
   polymarketSignalDecisions,
   polymarketPaperTrades,
   polymarketPaperTradeEvents,
+  polymarketKalshiMirrorOrders,
 } from "./polymarket_copy.js";
 
 export * from "./memory_bindings.js";

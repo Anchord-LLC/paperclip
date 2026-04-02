@@ -23,6 +23,19 @@ const baseConfig = {
   minWalletScore: 0.45,
   minSignalMateriality: 250,
   maxSpreadBps: 800,
+  minTradeSizePct: 7.5,
+  maxTradeSizePct: 12.5,
+  maxExposurePerMarketPct: 15,
+  maxExposurePerWalletPct: 30,
+  maxTotalOpenExposurePct: 90,
+  dynamicSizing: true,
+  dynamicSizingBasis: "current_exposure" as const,
+  positionCountBasedSizing: false,
+  paperStartingBankrollUsd: 100,
+  activeTradingCapitalMode: "capped_equity" as const,
+  activeTradingCapitalCapUsd: 500,
+  monthlyTargetUsd: 200,
+  profitSweepReserveUsd: 25,
   staleSignalThresholdMinutes: 30,
   maxExposurePerMarket: 5_000,
   maxTotalOpenPaperExposure: 20_000,
@@ -62,6 +75,9 @@ const baseSignal = {
   cadence: "5m" as const,
   rawMetadata: {
     spreadBps: 100,
+    currentPrice: 0.5,
+    currentValue: 400,
+    sourceNotionalUsd: 400,
   },
   createdAt: new Date("2026-04-01T12:00:00Z"),
 };
@@ -72,6 +88,7 @@ describe("polymarket risk governor", () => {
       config: baseConfig,
       signal: baseSignal,
       openTrades: [],
+      totalRealizedPnlUsd: 0,
       dailyRealizedLossUsd: 0,
       now: new Date("2026-04-01T12:00:00Z"),
     });
@@ -88,6 +105,7 @@ describe("polymarket risk governor", () => {
         sourceSnapshotTimestamp: new Date("2026-04-01T10:00:00Z"),
       },
       openTrades: [],
+      totalRealizedPnlUsd: 0,
       dailyRealizedLossUsd: 0,
       now: new Date("2026-04-01T12:00:00Z"),
     });
@@ -126,6 +144,7 @@ describe("polymarket risk governor", () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       }],
+      totalRealizedPnlUsd: 0,
       dailyRealizedLossUsd: 0,
       now: new Date("2026-04-01T12:00:00Z"),
     });

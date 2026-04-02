@@ -2,6 +2,8 @@ import { and, desc, eq, gte, ilike, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  polymarketKalshiMirrorOrders,
+  polymarketPaperTradeEvents,
   polymarketPaperTrades,
   polymarketRuntimeConfigs,
   polymarketSignalDecisions,
@@ -13,8 +15,11 @@ import {
 import type {
   AgentEnvConfig,
   PolymarketCopyDashboardData,
-  PolymarketCopyPaperTradeStatus,
+  PolymarketCopyKalshiMirrorOrder,
+  PolymarketCopyPaperBaseline,
   PolymarketCopyPaperTrade,
+  PolymarketCopyPaperTradeEvent,
+  PolymarketCopyPaperTradeStatus,
   PolymarketCopyRunStatus,
   PolymarketCopyRuntimeConfig,
   PolymarketCopySignalAction,
@@ -23,6 +28,15 @@ import type {
   PolymarketCopyWorkerKey,
 } from "@paperclipai/shared";
 import { inspectPolymarketAuthReadiness } from "./auth-readiness.js";
+import { inspectKalshiReadiness } from "./kalshi-readiness.js";
+import { buildPerformanceSummary } from "./performance.js";
+
+function safeDate(value: unknown): Date | null {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
 
 function workerHealth(lastSuccessAt: Date | null, lastStatus: string | null, maxAgeMinutes: number, now: Date): "healthy" | "stale" | "failed" | "idle" {
   if (lastStatus === "failed") return "failed";
@@ -79,6 +93,28 @@ function mapPaperTrade(row: typeof polymarketPaperTrades.$inferSelect): Polymark
   };
 }
 
+function mapPaperTradeEvent(row: typeof polymarketPaperTradeEvents.$inferSelect): PolymarketCopyPaperTradeEvent {
+  return {
+    ...row,
+    assumptions: row.assumptionsJson,
+  };
+}
+
+function mapKalshiMirrorOrder(row: typeof polymarketKalshiMirrorOrders.$inferSelect): PolymarketCopyKalshiMirrorOrder {
+  return {
+    ...row,
+    cadence: row.cadence as PolymarketCopyKalshiMirrorOrder["cadence"],
+    sourceAction: row.sourceAction as PolymarketCopyKalshiMirrorOrder["sourceAction"],
+    executionMode: row.executionMode as PolymarketCopyKalshiMirrorOrder["executionMode"],
+    matchStatus: row.matchStatus as PolymarketCopyKalshiMirrorOrder["matchStatus"],
+    executionStatus: row.executionStatus as PolymarketCopyKalshiMirrorOrder["executionStatus"],
+    matchQuality: row.matchQuality as PolymarketCopyKalshiMirrorOrder["matchQuality"],
+    kalshiSide: row.kalshiSide as PolymarketCopyKalshiMirrorOrder["kalshiSide"],
+    orderAction: row.orderAction as PolymarketCopyKalshiMirrorOrder["orderAction"],
+    metadata: row.metadataJson,
+  };
+}
+
 function mapWorkerRun(row: typeof polymarketWorkerRuns.$inferSelect) {
   return {
     ...row,
@@ -94,7 +130,38 @@ function mapRuntimeConfig(row: typeof polymarketRuntimeConfigs.$inferSelect): Po
   return {
     ...rest,
     mode: row.mode as PolymarketCopyRuntimeConfig["mode"],
+    dynamicSizingBasis: row.dynamicSizingBasis as PolymarketCopyRuntimeConfig["dynamicSizingBasis"],
+    activeTradingCapitalMode: row.activeTradingCapitalMode as PolymarketCopyRuntimeConfig["activeTradingCapitalMode"],
+    kalshiExecutionMode: row.kalshiExecutionMode as PolymarketCopyRuntimeConfig["kalshiExecutionMode"],
     authEnv: (authEnvJson ?? null) as AgentEnvConfig | null,
+  };
+}
+
+function resolvePaperBaseline(options: {
+  row: {
+    createdAt: Date;
+    details: Record<string, unknown> | null;
+  } | null;
+  runtimeConfig: PolymarketCopyRuntimeConfig;
+}): PolymarketCopyPaperBaseline {
+  const { row, runtimeConfig } = options;
+  const details = row?.details ?? null;
+  const startedAt = safeDate(details?.startedAt) ?? row?.createdAt ?? runtimeConfig.updatedAt;
+  const label = typeof details?.label === "string" && details.label.trim().length > 0
+    ? details.label
+    : row
+      ? "Paper test baseline"
+      : "Runtime config baseline";
+  const source = row ? "manual_marker" : "derived";
+  const startingBankrollUsd = typeof details?.startingBankrollUsd === "number"
+    ? details.startingBankrollUsd
+    : runtimeConfig.paperStartingBankrollUsd;
+
+  return {
+    startedAt: startedAt ?? runtimeConfig.updatedAt,
+    source,
+    label,
+    startingBankrollUsd,
   };
 }
 
@@ -105,30 +172,35 @@ export function polymarketDashboardReporter(db: Db) {
       const todayStart = new Date(now);
       todayStart.setHours(0, 0, 0, 0);
 
-      const [runtimeConfig] = await db
+      const [runtimeConfigRow] = await db
         .select()
         .from(polymarketRuntimeConfigs)
         .where(eq(polymarketRuntimeConfigs.companyId, companyId));
 
-      const watchedWallets = await db
+      const runtimeConfig = mapRuntimeConfig(runtimeConfigRow);
+
+      const watchedWalletRows = await db
         .select()
         .from(polymarketWatchedWallets)
         .where(eq(polymarketWatchedWallets.companyId, companyId))
         .orderBy(polymarketWatchedWallets.status, polymarketWatchedWallets.currentRank);
+      const watchedWallets = watchedWalletRows.map(mapWatchedWallet);
 
-      const walletSelectionRuns = await db
+      const walletSelectionRunRows = await db
         .select()
         .from(polymarketWalletSelectionRuns)
         .where(eq(polymarketWalletSelectionRuns.companyId, companyId))
         .orderBy(desc(polymarketWalletSelectionRuns.startedAt))
         .limit(10);
+      const walletSelectionRuns = walletSelectionRunRows.map(mapSelectionRun);
 
-      const workerRuns = await db
+      const workerRunRows = await db
         .select()
         .from(polymarketWorkerRuns)
         .where(eq(polymarketWorkerRuns.companyId, companyId))
         .orderBy(desc(polymarketWorkerRuns.startedAt))
-        .limit(20);
+        .limit(30);
+      const workerRuns = workerRunRows.map(mapWorkerRun);
 
       const signalRows = await db
         .select()
@@ -136,9 +208,8 @@ export function polymarketDashboardReporter(db: Db) {
         .where(eq(polymarketSignals.companyId, companyId))
         .orderBy(desc(polymarketSignals.createdAt))
         .limit(50);
-
       const signalIds = signalRows.map((signal) => signal.id);
-      const decisions = signalIds.length > 0
+      const decisionRows = signalIds.length > 0
         ? await db
           .select()
           .from(polymarketSignalDecisions)
@@ -147,30 +218,90 @@ export function polymarketDashboardReporter(db: Db) {
             inArray(polymarketSignalDecisions.signalId, signalIds),
           ))
         : [];
-      const decisionBySignalId = new Map(decisions.map((decision) => [decision.signalId, decision]));
+      const decisionBySignalId = new Map(decisionRows.map((decision) => [decision.signalId, decision]));
 
-      const paperTradeRows = await db
+      const allPaperTradeRows = await db
         .select()
         .from(polymarketPaperTrades)
         .where(eq(polymarketPaperTrades.companyId, companyId))
-        .orderBy(desc(polymarketPaperTrades.lastUpdatedAt))
-        .limit(50);
-      const paperTrades = paperTradeRows.map(mapPaperTrade);
+        .orderBy(desc(polymarketPaperTrades.lastUpdatedAt));
+      const allPaperTrades = allPaperTradeRows.map(mapPaperTrade);
 
-      const todaySignals = signalRows.filter((signal) => signal.createdAt >= todayStart);
-      const todayDecisions = decisions.filter((decision) => decision.createdAt >= todayStart);
-      const lastSuccessful5m = workerRuns.find((run) => run.workerKey === "polymarket-monitor-5m" && run.status === "success") ?? null;
-      const lastSuccessful15m = workerRuns.find((run) => run.workerKey === "polymarket-monitor-15m" && run.status === "success") ?? null;
-      const last5mRun = workerRuns.find((run) => run.workerKey === "polymarket-monitor-5m") ?? null;
-      const last15mRun = workerRuns.find((run) => run.workerKey === "polymarket-monitor-15m") ?? null;
-      const openTrades = paperTrades.filter((trade) => trade.status === "open");
-      const closedTrades = paperTrades.filter((trade) => trade.status === "closed");
+      const baselineRow = await db
+        .select({
+          createdAt: activityLog.createdAt,
+          details: activityLog.details,
+        })
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, "polymarket.paper_baseline.set"),
+        ))
+        .orderBy(desc(activityLog.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const baseline = resolvePaperBaseline({ row: baselineRow, runtimeConfig });
+      const scopedPaperTrades = allPaperTrades.filter((trade) =>
+        trade.openedAt >= baseline.startedAt || (trade.closedAt != null && trade.closedAt >= baseline.startedAt)
+      );
+      const paperTrades = scopedPaperTrades.slice(0, 50);
+      const openTrades = scopedPaperTrades.filter((trade) => trade.status === "open");
+      const closedTrades = scopedPaperTrades.filter((trade) => trade.status === "closed");
+
+      const performanceSignalRows = await db
+        .select()
+        .from(polymarketSignals)
+        .where(and(
+          eq(polymarketSignals.companyId, companyId),
+          gte(polymarketSignals.createdAt, baseline.startedAt),
+        ))
+        .orderBy(polymarketSignals.createdAt);
+      const performanceSignals = performanceSignalRows.map(mapSignal);
+      const signalsById = new Map(performanceSignals.map((signal) => [signal.id, signal] as const));
+
+      const performanceDecisionRows = await db
+        .select()
+        .from(polymarketSignalDecisions)
+        .where(and(
+          eq(polymarketSignalDecisions.companyId, companyId),
+          gte(polymarketSignalDecisions.createdAt, baseline.startedAt),
+        ))
+        .orderBy(polymarketSignalDecisions.createdAt);
+      const performanceDecisions = performanceDecisionRows.map(mapSignalDecision);
+
+      const paperTradeEventRows = await db
+        .select()
+        .from(polymarketPaperTradeEvents)
+        .where(and(
+          eq(polymarketPaperTradeEvents.companyId, companyId),
+          gte(polymarketPaperTradeEvents.createdAt, baseline.startedAt),
+        ))
+        .orderBy(polymarketPaperTradeEvents.createdAt);
+      const paperTradeEvents = paperTradeEventRows.map(mapPaperTradeEvent);
+
+      const kalshiMirrorOrderRows = await db
+        .select()
+        .from(polymarketKalshiMirrorOrders)
+        .where(and(
+          eq(polymarketKalshiMirrorOrders.companyId, companyId),
+          gte(polymarketKalshiMirrorOrders.createdAt, baseline.startedAt),
+        ))
+        .orderBy(desc(polymarketKalshiMirrorOrders.createdAt));
+      const kalshiMirrorOrders = kalshiMirrorOrderRows.map(mapKalshiMirrorOrder);
+
+      const activeTodayStart = todayStart.getTime() > baseline.startedAt.getTime() ? todayStart : baseline.startedAt;
+      const todaySignals = performanceSignals.filter((signal) => signal.createdAt >= activeTodayStart);
+      const todayDecisions = performanceDecisions.filter((decision) => decision.createdAt >= activeTodayStart);
+      const lastSuccessful5m = workerRunRows.find((run) => run.workerKey === "polymarket-monitor-5m" && run.status === "success") ?? null;
+      const lastSuccessful15m = workerRunRows.find((run) => run.workerKey === "polymarket-monitor-15m" && run.status === "success") ?? null;
+      const last5mRun = workerRunRows.find((run) => run.workerKey === "polymarket-monitor-5m") ?? null;
+      const last15mRun = workerRunRows.find((run) => run.workerKey === "polymarket-monitor-15m") ?? null;
       const thresholdFailures = todayDecisions.reduce<Map<string, number>>((acc, decision) => {
         acc.set(decision.reasonCode, (acc.get(decision.reasonCode) ?? 0) + 1);
         return acc;
       }, new Map());
 
-      const auditLog = await db
+      const auditLogRows = await db
         .select({
           id: activityLog.id,
           action: activityLog.action,
@@ -192,9 +323,15 @@ export function polymarketDashboardReporter(db: Db) {
       const authReadiness = await inspectPolymarketAuthReadiness(
         db,
         companyId,
-        mapRuntimeConfig(runtimeConfig),
-        auditLog,
+        runtimeConfig,
+        auditLogRows,
       );
+      const kalshiReadiness = await inspectKalshiReadiness({
+        db,
+        companyId,
+        runtimeConfig,
+        signalSourceActive: runtimeConfig.monitor5mEnabled || runtimeConfig.monitor15mEnabled,
+      });
 
       const [{ dailyRealizedLossUsd }] = await db
         .select({
@@ -203,14 +340,28 @@ export function polymarketDashboardReporter(db: Db) {
         .from(polymarketPaperTrades)
         .where(and(
           eq(polymarketPaperTrades.companyId, companyId),
-          gte(polymarketPaperTrades.lastUpdatedAt, todayStart),
+          gte(polymarketPaperTrades.lastUpdatedAt, activeTodayStart),
+          gte(polymarketPaperTrades.openedAt, baseline.startedAt),
         ));
+
+      const performanceSummary = buildPerformanceSummary({
+        runtimeConfig,
+        baseline,
+        paperTrades: allPaperTrades,
+        paperTradeEvents,
+        mirrorOrders: kalshiMirrorOrders,
+        signalsById,
+        decisions: performanceDecisions,
+        walletSelectionRuns,
+        workerRuns,
+        now,
+      });
 
       return {
         companyId,
-        runtimeConfig: mapRuntimeConfig(runtimeConfig),
+        runtimeConfig,
         overview: {
-          mode: runtimeConfig.mode as PolymarketCopyRuntimeConfig["mode"],
+          mode: runtimeConfig.mode,
           liveEnabled: runtimeConfig.liveEnabled,
           tradingKillSwitch: runtimeConfig.tradingKillSwitch,
           watchedWalletCount: watchedWallets.filter((wallet) => wallet.status === "active").length,
@@ -221,14 +372,14 @@ export function polymarketDashboardReporter(db: Db) {
           blockedCount: todayDecisions.filter((decision) => decision.decision === "blocked").length,
           paperTradesOpen: openTrades.length,
           paperTradesClosed: closedTrades.length,
-          realizedPnlUsd: paperTrades.reduce((sum, trade) => sum + trade.realizedPnlUsd, 0),
-          unrealizedPnlUsd: openTrades.reduce((sum, trade) => sum + trade.unrealizedPnlUsd, 0),
+          realizedPnlUsd: performanceSummary.realizedPnlUsd,
+          unrealizedPnlUsd: performanceSummary.unrealizedPnlUsd,
           lastSuccessful5mRun: lastSuccessful5m?.finishedAt ?? null,
           lastSuccessful15mRun: lastSuccessful15m?.finishedAt ?? null,
           workerHealth: {
             "wallet-selector-daily": workerHealth(
-              workerRuns.find((run) => run.workerKey === "wallet-selector-daily" && run.status === "success")?.finishedAt ?? null,
-              workerRuns.find((run) => run.workerKey === "wallet-selector-daily")?.status ?? null,
+              workerRunRows.find((run) => run.workerKey === "wallet-selector-daily" && run.status === "success")?.finishedAt ?? null,
+              workerRunRows.find((run) => run.workerKey === "wallet-selector-daily")?.status ?? null,
               26 * 60,
               now,
             ),
@@ -236,27 +387,28 @@ export function polymarketDashboardReporter(db: Db) {
             "polymarket-monitor-15m": workerHealth(lastSuccessful15m?.finishedAt ?? null, last15mRun?.status ?? null, 35, now),
           },
         },
-        walletSelectionRuns: walletSelectionRuns.map(mapSelectionRun),
-        watchedWallets: watchedWallets.map(mapWatchedWallet),
+        performance: performanceSummary,
+        walletSelectionRuns,
+        watchedWallets,
         signals: signalRows.map((signal) => ({
           ...mapSignal(signal),
           decision: decisionBySignalId.get(signal.id) ? mapSignalDecision(decisionBySignalId.get(signal.id)!) : null,
         })),
         paperTrades,
         risk: {
-          blockedSignals: todaySignals
-            .map((signal) => decisionBySignalId.get(signal.id))
-            .filter((decision): decision is NonNullable<typeof decision> => decision?.decision === "blocked")
-            .map(mapSignalDecision)
+          blockedSignals: todayDecisions
+            .filter((decision) => decision.decision === "blocked")
             .slice(0, 20),
           thresholdFailures: [...thresholdFailures.entries()].map(([reasonCode, count]) => ({ reasonCode, count })),
-          currentExposureUsd: openTrades.reduce((sum, trade) => sum + trade.notionalUsd, 0),
+          currentExposureUsd: performanceSummary.currentExposureUsd,
           dailyRealizedLossUsd: Number(dailyRealizedLossUsd ?? 0),
           killSwitch: runtimeConfig.tradingKillSwitch,
         },
         authReadiness,
-        workerRuns: workerRuns.map(mapWorkerRun),
-        auditLog,
+        kalshiReadiness,
+        kalshiMirrorOrders,
+        workerRuns,
+        auditLog: auditLogRows,
       };
     },
   };

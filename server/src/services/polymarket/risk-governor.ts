@@ -3,7 +3,17 @@ import type {
   PolymarketCopyRuntimeConfig,
   PolymarketCopySignal,
 } from "@paperclipai/shared";
-import { exposureForSignal, signalMetadata } from "./shared.js";
+import { signalMetadata } from "./shared.js";
+import {
+  activeTradingCapitalUsd,
+  currentOpenExposureUsd,
+  currentWalletEquityUsd,
+  exposurePct,
+  isRiskIncreasingAction,
+  marketExposureUsd,
+  plannedSignalExposureUsd,
+  walletExposureUsd,
+} from "./runtime-math.js";
 
 export interface RiskGovernorDecision {
   decision: "accepted" | "skipped" | "blocked";
@@ -16,21 +26,37 @@ export function evaluateRiskDecision(options: {
   config: PolymarketCopyRuntimeConfig;
   signal: PolymarketCopySignal;
   openTrades: PolymarketCopyPaperTrade[];
+  totalRealizedPnlUsd: number;
   dailyRealizedLossUsd: number;
   now: Date;
 }): RiskGovernorDecision {
-  const { config, signal, openTrades, dailyRealizedLossUsd, now } = options;
+  const { config, signal, openTrades, totalRealizedPnlUsd, dailyRealizedLossUsd, now } = options;
   const metadata = signalMetadata(signal);
-  const totalOpenExposure = openTrades.reduce((sum, trade) => sum + Math.max(0, trade.notionalUsd), 0);
-  const marketExposure = openTrades
-    .filter((trade) => trade.marketId === signal.marketId)
-    .reduce((sum, trade) => sum + Math.max(0, trade.notionalUsd), 0);
-  const signalExposure = exposureForSignal(signal);
+  const totalOpenExposure = currentOpenExposureUsd(openTrades);
+  const marketExposure = marketExposureUsd(openTrades, signal.marketId);
+  const walletExposure = walletExposureUsd(openTrades, signal.sourceWalletAddress);
+  const existingTrade = openTrades.find((trade) => (
+    trade.sourceWalletAddress === signal.sourceWalletAddress
+    && trade.marketId === signal.marketId
+    && trade.side === (signal.side ?? "unknown")
+  )) ?? null;
+  const signalExposure = plannedSignalExposureUsd({
+    config,
+    signal,
+    openTrades,
+    totalRealizedPnlUsd,
+    existingTrade,
+  });
+  const walletEquityUsd = currentWalletEquityUsd(config, totalRealizedPnlUsd, openTrades);
+  const activeCapitalUsd = activeTradingCapitalUsd(config, totalRealizedPnlUsd, openTrades);
   const signalAgeMinutes =
     signal.sourceSnapshotTimestamp == null
       ? null
       : (now.getTime() - signal.sourceSnapshotTimestamp.getTime()) / 60_000;
   const spreadBps = typeof metadata.spreadBps === "number" ? metadata.spreadBps : null;
+  const marketExposureCapUsd = activeCapitalUsd * (config.maxExposurePerMarketPct / 100);
+  const walletExposureCapUsd = activeCapitalUsd * (config.maxExposurePerWalletPct / 100);
+  const totalExposureCapUsd = activeCapitalUsd * (config.maxTotalOpenExposurePct / 100);
 
   const snapshot = {
     walletScore: signal.walletScore,
@@ -41,10 +67,24 @@ export function evaluateRiskDecision(options: {
     maxSpreadBps: config.maxSpreadBps,
     signalAgeMinutes,
     staleSignalThresholdMinutes: config.staleSignalThresholdMinutes,
-    marketExposure,
-    maxExposurePerMarket: config.maxExposurePerMarket,
-    totalOpenExposure,
-    maxTotalOpenPaperExposure: config.maxTotalOpenPaperExposure,
+    currentPaperBankrollUsd: walletEquityUsd,
+    currentWalletEquityUsd: walletEquityUsd,
+    activeTradingCapitalUsd: activeCapitalUsd,
+    activeTradingCapitalCapUsd: config.activeTradingCapitalCapUsd,
+    activeTradingCapitalMode: config.activeTradingCapitalMode,
+    currentOpenExposureUsd: totalOpenExposure,
+    currentOpenExposurePct: exposurePct(totalOpenExposure, activeCapitalUsd),
+    marketExposureUsd: marketExposure,
+    marketExposurePct: exposurePct(marketExposure, activeCapitalUsd),
+    walletExposureUsd: walletExposure,
+    walletExposurePct: exposurePct(walletExposure, activeCapitalUsd),
+    projectedSignalExposureUsd: signalExposure,
+    marketExposureCapUsd,
+    walletExposureCapUsd,
+    totalExposureCapUsd,
+    maxExposurePerMarketPct: config.maxExposurePerMarketPct,
+    maxExposurePerWalletPct: config.maxExposurePerWalletPct,
+    maxTotalOpenExposurePct: config.maxTotalOpenExposurePct,
     openPositionCount: openTrades.length,
     maxOpenSimulatedPositions: config.maxOpenSimulatedPositions,
     dailyRealizedLossUsd,
@@ -87,28 +127,47 @@ export function evaluateRiskDecision(options: {
     };
   }
 
-  if (marketExposure + signalExposure > config.maxExposurePerMarket) {
+  if (activeCapitalUsd <= 0) {
     return {
       decision: "blocked",
-      reasonCode: "market_exposure_limit",
-      reasonDetail: "Signal would exceed max exposure for this market.",
+      reasonCode: "paper_bankroll_depleted",
+      reasonDetail: "Active trading capital is depleted, so new copy exposure is blocked.",
       snapshot,
     };
   }
 
-  if (totalOpenExposure + signalExposure > config.maxTotalOpenPaperExposure) {
-    return {
-      decision: "blocked",
-      reasonCode: "total_exposure_limit",
-      reasonDetail: "Signal would exceed max total open paper exposure.",
-      snapshot,
-    };
+  if (isRiskIncreasingAction(signal.action)) {
+    if (marketExposure + signalExposure > marketExposureCapUsd) {
+      return {
+        decision: "blocked",
+        reasonCode: "market_exposure_limit",
+        reasonDetail: "Signal would exceed the per-market paper exposure cap.",
+        snapshot,
+      };
+    }
+
+    if (walletExposure + signalExposure > walletExposureCapUsd) {
+      return {
+        decision: "blocked",
+        reasonCode: "wallet_exposure_limit",
+        reasonDetail: "Signal would exceed the per-wallet paper exposure cap.",
+        snapshot,
+      };
+    }
+
+    if (totalOpenExposure + signalExposure > totalExposureCapUsd) {
+      return {
+        decision: "blocked",
+        reasonCode: "total_exposure_limit",
+        reasonDetail: "Signal would exceed the total open paper exposure cap.",
+        snapshot,
+      };
+    }
   }
 
   if (
-    signal.action !== "reduced_position" &&
-    signal.action !== "closed_position" &&
-    openTrades.length >= config.maxOpenSimulatedPositions
+    isRiskIncreasingAction(signal.action)
+    && openTrades.length >= config.maxOpenSimulatedPositions
   ) {
     return {
       decision: "blocked",

@@ -15,12 +15,18 @@ export type PolymarketCopySignalAction =
   | "closed_position";
 export type PolymarketCopySignalDecision = "accepted" | "skipped" | "blocked";
 export type PolymarketCopyPaperTradeStatus = "open" | "closed";
+export type PolymarketCopyDynamicSizingBasis = "current_exposure";
+export type PolymarketCopyKalshiExecutionMode = "disabled" | "dry_run" | "live";
 export type PolymarketAuthEnvKey =
   | "POLYMARKET_PRIVATE_KEY"
   | "POLYMARKET_API_KEY"
   | "POLYMARKET_API_SECRET"
   | "POLYMARKET_API_PASSPHRASE"
   | "POLYMARKET_FUNDER_ADDRESS";
+export type PolymarketKalshiEnvKey =
+  | "KALSHI_API_KEY_ID"
+  | "KALSHI_PRIVATE_KEY";
+export type PolymarketCopySecretEnvKey = PolymarketAuthEnvKey | PolymarketKalshiEnvKey;
 export type PolymarketAuthReadinessResult = "ready" | "incomplete" | "failed";
 export type PolymarketAuthDerivationResult = "succeeded" | "failed";
 
@@ -46,6 +52,21 @@ export interface PolymarketCopyRuntimeConfig {
   minWalletScore: number;
   minSignalMateriality: number;
   maxSpreadBps: number;
+  minTradeSizePct: number;
+  maxTradeSizePct: number;
+  maxExposurePerMarketPct: number;
+  maxExposurePerWalletPct: number;
+  maxTotalOpenExposurePct: number;
+  dynamicSizing: boolean;
+  dynamicSizingBasis: PolymarketCopyDynamicSizingBasis;
+  positionCountBasedSizing: boolean;
+  paperStartingBankrollUsd: number;
+  activeTradingCapitalMode: "capped_equity";
+  activeTradingCapitalCapUsd: number;
+  kalshiExecutionMode: PolymarketCopyKalshiExecutionMode;
+  kalshiApiBaseUrl: string;
+  monthlyTargetUsd: number;
+  profitSweepReserveUsd: number;
   staleSignalThresholdMinutes: number;
   maxExposurePerMarket: number;
   maxTotalOpenPaperExposure: number;
@@ -230,6 +251,35 @@ export interface PolymarketCopyPaperTradeEvent {
   createdAt: Date;
 }
 
+export interface PolymarketCopyKalshiMirrorOrder {
+  id: string;
+  companyId: string;
+  signalId: string;
+  sourceWalletAddress: string;
+  cadence: PolymarketCopyCadence;
+  sourceMarketId: string;
+  sourceMarketTitle: string | null;
+  sourceAction: PolymarketCopySignalAction;
+  sourceSide: string | null;
+  executionMode: PolymarketCopyKalshiExecutionMode;
+  matchStatus: "matched" | "rejected";
+  executionStatus: "disabled" | "match_rejected" | "dry_run_recorded" | "live_blocked" | "live_submitted" | "execution_failed";
+  rejectionReason: string | null;
+  matchConfidence: number | null;
+  matchQuality: "high" | "medium" | "low" | null;
+  kalshiEventTicker: string | null;
+  kalshiMarketTicker: string | null;
+  kalshiMarketTitle: string | null;
+  kalshiSide: "yes" | "no" | null;
+  orderAction: "buy" | "sell" | null;
+  contractCount: number | null;
+  limitPriceDollars: number | null;
+  notionalUsd: number | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface PolymarketCopyDashboardOverview {
   mode: PolymarketCopyMode;
   liveEnabled: boolean;
@@ -247,6 +297,99 @@ export interface PolymarketCopyDashboardOverview {
   lastSuccessful5mRun: Date | null;
   lastSuccessful15mRun: Date | null;
   workerHealth: Record<string, "healthy" | "stale" | "failed" | "idle">;
+}
+
+export interface PolymarketCopyPerformancePoint {
+  label: string;
+  timestamp: Date;
+  equityUsd: number;
+}
+
+export interface PolymarketCopyPerformanceBar {
+  label: string;
+  valueUsd: number;
+}
+
+export interface PolymarketCopyPerformanceReasonBreakdown {
+  reasonCode: string;
+  count: number;
+}
+
+export interface PolymarketCopyPerformanceTradeSummary {
+  label: string;
+  walletAddress: string | null;
+  marketTitle: string | null;
+  pnlUsd: number;
+  holdMinutes: number | null;
+}
+
+export interface PolymarketCopyPerformanceInsights {
+  bestWallet: PolymarketCopyPerformanceBar | null;
+  worstWallet: PolymarketCopyPerformanceBar | null;
+  bestTrade: PolymarketCopyPerformanceTradeSummary | null;
+  worstTrade: PolymarketCopyPerformanceTradeSummary | null;
+  averageHoldMinutes: number | null;
+  concentrationWarnings: string[];
+  botLeader: "5m" | "15m" | "tie" | "insufficient_data";
+}
+
+export interface PolymarketCopyAutomationState {
+  walletSelectorAutoRunActive: boolean;
+  walletSelectorSchedule: string;
+  latestWalletSelectionRun: Date | null;
+  latestSuccessfulWalletSelectionRun: Date | null;
+  monitor5mAutoRunActive: boolean;
+  monitor15mAutoRunActive: boolean;
+  latestSuccessful5mRun: Date | null;
+  latestSuccessful15mRun: Date | null;
+}
+
+export interface PolymarketCopyPaperBaseline {
+  startedAt: Date;
+  source: "manual_marker" | "derived";
+  label: string;
+  startingBankrollUsd: number;
+}
+
+export interface PolymarketCopyPerformanceSummary {
+  baseline: PolymarketCopyPaperBaseline;
+  totalPnlUsd: number;
+  todayPnlUsd: number;
+  realizedPnlUsd: number;
+  unrealizedPnlUsd: number;
+  winRatePct: number;
+  currentWalletEquityUsd: number;
+  activeTradingCapitalUsd: number;
+  capitalCapUsd: number;
+  capitalProgressPct: number;
+  currentExposurePct: number;
+  availablePaperCashPct: number;
+  activeOpenPositions: number;
+  currentExposureUsd: number;
+  availablePaperCashUsd: number;
+  currentPaperBankrollUsd: number;
+  trailing30dRealizedPnlUsd: number;
+  monthlyTargetUsd: number;
+  targetGapUsd: number;
+  targetAchieved: boolean;
+  targetProgressPct: number;
+  profitSweepReserveUsd: number;
+  sweepableProfitUsd: number;
+  activeTradingCapitalMode: "capped_equity";
+  sourceSignalCount: number;
+  kalshiMatchCount: number;
+  kalshiRejectedMatchCount: number;
+  dryRunMirroredOrders: number;
+  topKalshiMarkets: PolymarketCopyPerformanceBar[];
+  equityCurve: PolymarketCopyPerformancePoint[];
+  dailyPnl: PolymarketCopyPerformanceBar[];
+  pnlByWallet: PolymarketCopyPerformanceBar[];
+  pnlByBot: PolymarketCopyPerformanceBar[];
+  exposureByWallet: PolymarketCopyPerformanceBar[];
+  exposureByMarket: PolymarketCopyPerformanceBar[];
+  decisionReasons: PolymarketCopyPerformanceReasonBreakdown[];
+  insights: PolymarketCopyPerformanceInsights;
+  automation: PolymarketCopyAutomationState;
 }
 
 export interface PolymarketCopyRiskSummary {
@@ -295,6 +438,20 @@ export interface PolymarketCopyAuthReadiness {
   lastDerivation: PolymarketCopyAuthDerivationStatus;
 }
 
+export interface PolymarketCopyKalshiReadiness {
+  checkedAt: Date | null;
+  executionMode: PolymarketCopyKalshiExecutionMode;
+  authConfigured: boolean;
+  marketDataReachable: boolean;
+  balancesReachable: boolean;
+  positionsReachable: boolean;
+  signalSourceActive: boolean;
+  marketMatchQualityAvailable: boolean;
+  keyStatuses: Record<PolymarketKalshiEnvKey, PolymarketCopyAuthKeyStatus>;
+  reasonCodes: string[];
+  summary: string;
+}
+
 export interface PolymarketCopyDeriveApiCredentialsResult {
   result: PolymarketAuthDerivationResult;
   reasonCode: string | null;
@@ -318,11 +475,19 @@ export interface PolymarketCopyUnderlyingAgentSummary {
   title: string | null;
   status: string;
   adapterType: string;
+  docsPath: string | null;
+  docsRoot: string | null;
+  instructionsRootPath: string | null;
+  instructionsEntryFile: string | null;
 }
 
 export interface PolymarketCopyUnderlyingRuntimeService {
-  key: "monitor_5m" | "monitor_15m" | "risk_governor" | "execution_engine";
+  key: "wallet_selector" | "monitor_5m" | "monitor_15m" | "risk_governor" | "execution_engine";
   serviceName: string;
+  operatingName: string;
+  workerKey: string | null;
+  docsPath: string | null;
+  docsRoot: string | null;
   id: string | null;
   exists: boolean;
   status: string | null;
@@ -346,12 +511,15 @@ export interface PolymarketCopyDashboardData {
   runtimeConfig: PolymarketCopyRuntimeConfig;
   underlyingModel: PolymarketCopyUnderlyingModel;
   overview: PolymarketCopyDashboardOverview;
+  performance: PolymarketCopyPerformanceSummary;
   walletSelectionRuns: PolymarketCopyWalletSelectionRun[];
   watchedWallets: PolymarketCopyWatchedWallet[];
   signals: Array<PolymarketCopySignal & { decision: PolymarketCopySignalDecisionRecord | null }>;
   paperTrades: PolymarketCopyPaperTrade[];
   risk: PolymarketCopyRiskSummary;
   authReadiness: PolymarketCopyAuthReadiness;
+  kalshiReadiness: PolymarketCopyKalshiReadiness;
+  kalshiMirrorOrders: PolymarketCopyKalshiMirrorOrder[];
   workerRuns: PolymarketCopyWorkerRun[];
   auditLog: Array<{
     id: string;

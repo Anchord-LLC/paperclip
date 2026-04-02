@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { and, desc, eq, gte, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -7,6 +8,7 @@ import {
   authUsers,
   companies,
   companyMemberships,
+  polymarketKalshiMirrorOrders,
   polymarketPaperTradeEvents,
   polymarketPaperTrades,
   polymarketRuntimeConfigs,
@@ -49,8 +51,8 @@ import { inspectPolymarketAuthReadiness } from "./auth-readiness.js";
 import { writePolymarketArtifact } from "./artifact-writer.js";
 import { derivePolymarketApiCredentialsFromPrivateKey } from "./credential-derivation.js";
 import { polymarketDashboardReporter } from "./dashboard-reporter.js";
-import { evaluatePolymarketLiveDispatch } from "./live-guards.js";
-import { createPolymarketOfficialClient } from "./official-client.js";
+import { mirrorSignalToKalshi } from "./kalshi-execution.js";
+import { createPolymarketOfficialClient, type PolymarketLeaderboardEntry } from "./official-client.js";
 import { applySignalToPaperTrade } from "./paper-simulator.js";
 import { evaluateRiskDecision } from "./risk-governor.js";
 import {
@@ -84,34 +86,128 @@ type AuditRow = {
 type RuntimeServiceDefinition = {
   key: PolymarketCopyUnderlyingRuntimeService["key"];
   serviceName: string;
+  operatingName: string;
   providerRef: string;
+  workerKey: string | null;
+  docsRoot: string;
+  docsPath: string;
 };
 
 const POLYMARKET_TRADING_ANALYST_NAME = "Trading Analyst";
+const POLYMARKET_COPY_DESK_DOCS_ROOT = "docs/companies/anchord-polymarket-copy-desk";
+const POLYMARKET_TRADING_ANALYST_DOCS_ROOT = `${POLYMARKET_COPY_DESK_DOCS_ROOT}/agents/trading-analyst`;
+const POLYMARKET_TRADING_ANALYST_DOCS_PATH = `${POLYMARKET_TRADING_ANALYST_DOCS_ROOT}/agent.md`;
+const POLYMARKET_TRADING_ANALYST_CAPABILITIES = "Polymarket copy desk analysis and operator support";
 const POLYMARKET_RUNTIME_SERVICE_DEFINITIONS: RuntimeServiceDefinition[] = [
+  {
+    key: "wallet_selector",
+    serviceName: "Polymarket Wallet Selector",
+    operatingName: "Wallet Selector",
+    providerRef: "polymarket-wallet-selector",
+    workerKey: "wallet-selector-daily",
+    docsRoot: `${POLYMARKET_COPY_DESK_DOCS_ROOT}/runtime-services/wallet-selector`,
+    docsPath: `${POLYMARKET_COPY_DESK_DOCS_ROOT}/runtime-services/wallet-selector/service.md`,
+  },
   {
     key: "monitor_5m",
     serviceName: "Polymarket 5m Monitor",
+    operatingName: "Polymarket 5m Copy Bot",
     providerRef: "polymarket-monitor-5m",
+    workerKey: "polymarket-monitor-5m",
+    docsRoot: `${POLYMARKET_COPY_DESK_DOCS_ROOT}/runtime-services/polymarket-5m-copy-bot`,
+    docsPath: `${POLYMARKET_COPY_DESK_DOCS_ROOT}/runtime-services/polymarket-5m-copy-bot/service.md`,
   },
   {
     key: "monitor_15m",
     serviceName: "Polymarket 15m Monitor",
+    operatingName: "Polymarket 15m Copy Bot",
     providerRef: "polymarket-monitor-15m",
+    workerKey: "polymarket-monitor-15m",
+    docsRoot: `${POLYMARKET_COPY_DESK_DOCS_ROOT}/runtime-services/polymarket-15m-copy-bot`,
+    docsPath: `${POLYMARKET_COPY_DESK_DOCS_ROOT}/runtime-services/polymarket-15m-copy-bot/service.md`,
   },
   {
     key: "risk_governor",
     serviceName: "Polymarket Risk Governor",
+    operatingName: "Risk Governor",
     providerRef: "polymarket-risk-governor",
+    workerKey: null,
+    docsRoot: `${POLYMARKET_COPY_DESK_DOCS_ROOT}/runtime-services/risk-governor`,
+    docsPath: `${POLYMARKET_COPY_DESK_DOCS_ROOT}/runtime-services/risk-governor/service.md`,
   },
   {
     key: "execution_engine",
     serviceName: "Polymarket Execution Engine",
+    operatingName: "Execution Engine",
     providerRef: "polymarket-execution-engine",
+    workerKey: null,
+    docsRoot: `${POLYMARKET_COPY_DESK_DOCS_ROOT}/runtime-services/execution-engine`,
+    docsPath: `${POLYMARKET_COPY_DESK_DOCS_ROOT}/runtime-services/execution-engine/service.md`,
   },
 ];
 
+function asRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function asFiniteNumber(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function watchedWalletSeedEntry(wallet: PolymarketCopyWatchedWallet): PolymarketLeaderboardEntry {
+  const snapshot = asRecord(asRecord(wallet.metadata).snapshot);
+  const leaderboard = asRecord(snapshot.leaderboard);
+  return {
+    rank: String(asFiniteNumber(leaderboard.rank) ?? wallet.currentRank ?? 9_999),
+    proxyWallet: wallet.walletAddress,
+    userName: wallet.label || wallet.walletAddress,
+    xUsername: "",
+    verifiedBadge: false,
+    vol: asFiniteNumber(leaderboard.volume) ?? 0,
+    pnl: asFiniteNumber(leaderboard.pnl) ?? 0,
+    profileImage: "",
+  };
+}
+
+function polymarketCopyDeskDocsAbsolutePath(...parts: string[]) {
+  return join(process.cwd(), POLYMARKET_COPY_DESK_DOCS_ROOT, ...parts);
+}
+
+function buildTradingAnalystAdapterConfig(existing: Record<string, unknown> = {}) {
+  return {
+    ...existing,
+    instructionsBundleMode: "external",
+    instructionsRootPath: polymarketCopyDeskDocsAbsolutePath("agents", "trading-analyst"),
+    instructionsEntryFile: "agent.md",
+  };
+}
+
+function buildTradingAnalystMetadata(existing: Record<string, unknown> = {}) {
+  return {
+    ...existing,
+    polymarketDesk: true,
+    polymarketRole: "trading_analyst",
+    surface: "polymarket_copy",
+    polymarketOperatingPackRoot: POLYMARKET_COPY_DESK_DOCS_ROOT,
+    polymarketDocsRoot: POLYMARKET_TRADING_ANALYST_DOCS_ROOT,
+    polymarketDocsPath: POLYMARKET_TRADING_ANALYST_DOCS_PATH,
+    polymarketSupportOnly: true,
+    polymarketRiskAuthority: "none",
+    polymarketExecutionAuthority: "none",
+  };
+}
+
 function mapUnderlyingAgentSummary(row: typeof agents.$inferSelect) {
+  const metadata = asRecord(row.metadata);
+  const adapterConfig = asRecord(row.adapterConfig);
   return {
     id: row.id,
     name: row.name,
@@ -119,6 +215,10 @@ function mapUnderlyingAgentSummary(row: typeof agents.$inferSelect) {
     title: row.title,
     status: row.status,
     adapterType: row.adapterType,
+    docsPath: asNonEmptyString(metadata.polymarketDocsPath),
+    docsRoot: asNonEmptyString(metadata.polymarketDocsRoot),
+    instructionsRootPath: asNonEmptyString(adapterConfig.instructionsRootPath),
+    instructionsEntryFile: asNonEmptyString(adapterConfig.instructionsEntryFile),
   };
 }
 
@@ -201,6 +301,9 @@ function runtimeConfigFromRow(
   return {
     ...rest,
     mode: row.mode as PolymarketCopyRuntimeConfig["mode"],
+    dynamicSizingBasis: row.dynamicSizingBasis as PolymarketCopyRuntimeConfig["dynamicSizingBasis"],
+    activeTradingCapitalMode: row.activeTradingCapitalMode as PolymarketCopyRuntimeConfig["activeTradingCapitalMode"],
+    kalshiExecutionMode: row.kalshiExecutionMode as PolymarketCopyRuntimeConfig["kalshiExecutionMode"],
     artifactRootPath: normalizePolymarketArtifactRootPath(artifactRootPath),
     authEnv: (authEnvJson ?? null) as AgentEnvConfig | null,
   };
@@ -287,6 +390,69 @@ export function polymarketCopyService(db: Db) {
     await Promise.allSettled(entries.map((entry) => logActivity(db, entry)));
   }
 
+  function kalshiMirrorAuditAction(status: typeof polymarketKalshiMirrorOrders.$inferSelect.executionStatus) {
+    switch (status) {
+      case "dry_run_recorded":
+        return "polymarket.kalshi_mirror.dry_run_recorded";
+      case "match_rejected":
+        return "polymarket.kalshi_mirror.match_rejected";
+      case "disabled":
+        return "polymarket.kalshi_mirror.disabled";
+      case "live_blocked":
+        return "polymarket.kalshi_mirror.live_blocked";
+      case "live_submitted":
+        return "polymarket.kalshi_mirror.live_submitted";
+      default:
+        return "polymarket.kalshi_mirror.failed";
+    }
+  }
+
+  async function upsertKalshiMirrorOrder(
+    companyId: string,
+    payload: Awaited<ReturnType<typeof mirrorSignalToKalshi>>,
+  ) {
+    const now = new Date();
+    const [stored] = await db
+      .insert(polymarketKalshiMirrorOrders)
+      .values({
+        id: randomUUID(),
+        companyId,
+        ...payload,
+        metadataJson: payload.metadata,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: polymarketKalshiMirrorOrders.signalId,
+        set: {
+          sourceWalletAddress: payload.sourceWalletAddress,
+          cadence: payload.cadence,
+          sourceMarketId: payload.sourceMarketId,
+          sourceMarketTitle: payload.sourceMarketTitle,
+          sourceAction: payload.sourceAction,
+          sourceSide: payload.sourceSide,
+          executionMode: payload.executionMode,
+          matchStatus: payload.matchStatus,
+          executionStatus: payload.executionStatus,
+          rejectionReason: payload.rejectionReason,
+          matchConfidence: payload.matchConfidence,
+          matchQuality: payload.matchQuality,
+          kalshiEventTicker: payload.kalshiEventTicker,
+          kalshiMarketTicker: payload.kalshiMarketTicker,
+          kalshiMarketTitle: payload.kalshiMarketTitle,
+          kalshiSide: payload.kalshiSide,
+          orderAction: payload.orderAction,
+          contractCount: payload.contractCount,
+          limitPriceDollars: payload.limitPriceDollars,
+          notionalUsd: payload.notionalUsd,
+          metadataJson: payload.metadata,
+          updatedAt: now,
+        },
+      })
+      .returning();
+    return stored;
+  }
+
   async function ensureUnderlyingModel(companyId: string): Promise<PolymarketCopyUnderlyingModel> {
     const company = await db
       .select({ id: companies.id, issuePrefix: companies.issuePrefix })
@@ -336,13 +502,10 @@ export function polymarketCopyService(db: Db) {
           title: "Trading Analyst",
           status: "idle",
           reportsTo: ceoAgent?.id ?? null,
-          capabilities: "Polymarket desk analysis and operator support",
+          capabilities: POLYMARKET_TRADING_ANALYST_CAPABILITIES,
           adapterType: "codex_local",
-          metadata: {
-            polymarketDesk: true,
-            polymarketRole: "trading_analyst",
-            surface: "polymarket_copy",
-          },
+          adapterConfig: buildTradingAnalystAdapterConfig(),
+          metadata: buildTradingAnalystMetadata(),
         })
         .returning();
       tradingAnalyst = created;
@@ -359,13 +522,75 @@ export function polymarketCopyService(db: Db) {
           role: created.role,
           adapterType: created.adapterType,
           reportsTo: created.reportsTo,
+          docsPath: POLYMARKET_TRADING_ANALYST_DOCS_PATH,
         },
       });
     } else {
       await access.ensureMembership(companyId, "agent", tradingAnalyst.id, "member", "active");
+      const patch: Partial<typeof agents.$inferInsert> = {};
+      const currentAdapterConfig = asRecord(tradingAnalyst.adapterConfig);
+      const nextAdapterConfig = buildTradingAnalystAdapterConfig(currentAdapterConfig);
+      if (
+        currentAdapterConfig.instructionsBundleMode !== nextAdapterConfig.instructionsBundleMode
+        || currentAdapterConfig.instructionsRootPath !== nextAdapterConfig.instructionsRootPath
+        || currentAdapterConfig.instructionsEntryFile !== nextAdapterConfig.instructionsEntryFile
+      ) {
+        patch.adapterConfig = nextAdapterConfig;
+      }
+
+      const currentMetadata = asRecord(tradingAnalyst.metadata);
+      const nextMetadata = buildTradingAnalystMetadata(currentMetadata);
+      const metadataKeys = [
+        "polymarketDesk",
+        "polymarketRole",
+        "surface",
+        "polymarketOperatingPackRoot",
+        "polymarketDocsRoot",
+        "polymarketDocsPath",
+        "polymarketSupportOnly",
+        "polymarketRiskAuthority",
+        "polymarketExecutionAuthority",
+      ] as const;
+      if (metadataKeys.some((key) => currentMetadata[key] !== nextMetadata[key])) {
+        patch.metadata = nextMetadata;
+      }
+
+      if (tradingAnalyst.capabilities !== POLYMARKET_TRADING_ANALYST_CAPABILITIES) {
+        patch.capabilities = POLYMARKET_TRADING_ANALYST_CAPABILITIES;
+      }
+      if (ceoAgent?.id && tradingAnalyst.reportsTo !== ceoAgent.id) {
+        patch.reportsTo = ceoAgent.id;
+      }
+
+      if (Object.keys(patch).length > 0) {
+        const [updated] = await db
+          .update(agents)
+          .set({
+            ...patch,
+            updatedAt: new Date(),
+          })
+          .where(eq(agents.id, tradingAnalyst.id))
+          .returning();
+        tradingAnalyst = updated;
+        auditEntries.push({
+          companyId,
+          actorType: "system",
+          actorId: POLYMARKET_COPY_SYSTEM_ACTOR_ID,
+          action: "polymarket.model.trading_analyst_reconciled",
+          entityType: "agent",
+          entityId: updated.id,
+          details: {
+            instructionsRootPath: asRecord(updated.adapterConfig).instructionsRootPath ?? null,
+            instructionsEntryFile: asRecord(updated.adapterConfig).instructionsEntryFile ?? null,
+            docsPath: asRecord(updated.metadata).polymarketDocsPath ?? null,
+            reportsTo: updated.reportsTo,
+          },
+        });
+      }
     }
 
-    const runtimeServiceRows = tradingAnalyst
+    const runtimeOwnerAgentId = ceoAgent?.id ?? tradingAnalyst?.id ?? null;
+    const runtimeServiceRows = runtimeOwnerAgentId
       ? await db
         .select()
         .from(workspaceRuntimeServices)
@@ -379,7 +604,7 @@ export function polymarketCopyService(db: Db) {
       : [];
     const runtimeServiceByName = new Map(runtimeServiceRows.map((row) => [row.serviceName, row]));
 
-    if (tradingAnalyst) {
+    if (runtimeOwnerAgentId) {
       const now = new Date();
       for (const definition of POLYMARKET_RUNTIME_SERVICE_DEFINITIONS) {
         const existing = runtimeServiceByName.get(definition.serviceName) ?? null;
@@ -391,14 +616,14 @@ export function polymarketCopyService(db: Db) {
               id: randomUUID(),
               companyId,
               scopeType: "agent",
-              scopeId: tradingAnalyst.id,
+              scopeId: runtimeOwnerAgentId,
               serviceName: definition.serviceName,
               status: "stopped",
               lifecycle: "shared",
               reuseKey: `polymarket:${companyId}:${definition.key}`,
               provider: "adapter_managed",
               providerRef: definition.providerRef,
-              ownerAgentId: tradingAnalyst.id,
+              ownerAgentId: runtimeOwnerAgentId,
               lastUsedAt: now,
               startedAt: now,
               stoppedAt: now,
@@ -429,11 +654,11 @@ export function polymarketCopyService(db: Db) {
 
         const patch: Partial<typeof workspaceRuntimeServices.$inferInsert> = {};
         if (existing.scopeType !== "agent") patch.scopeType = "agent";
-        if (existing.scopeId !== tradingAnalyst.id) patch.scopeId = tradingAnalyst.id;
+        if (existing.scopeId !== runtimeOwnerAgentId) patch.scopeId = runtimeOwnerAgentId;
         if (existing.lifecycle !== "shared") patch.lifecycle = "shared";
         if (existing.provider !== "adapter_managed") patch.provider = "adapter_managed";
         if (existing.providerRef !== definition.providerRef) patch.providerRef = definition.providerRef;
-        if (existing.ownerAgentId !== tradingAnalyst.id) patch.ownerAgentId = tradingAnalyst.id;
+        if (existing.ownerAgentId !== runtimeOwnerAgentId) patch.ownerAgentId = runtimeOwnerAgentId;
         if (Object.keys(patch).length === 0) continue;
 
         const [updated] = await db
@@ -486,6 +711,10 @@ export function polymarketCopyService(db: Db) {
         return {
           key: definition.key,
           serviceName: definition.serviceName,
+          operatingName: definition.operatingName,
+          workerKey: definition.workerKey,
+          docsPath: definition.docsPath,
+          docsRoot: definition.docsRoot,
           id: serviceRow?.id ?? null,
           exists: serviceRow != null,
           status: serviceRow?.status ?? null,
@@ -991,7 +1220,19 @@ export function polymarketCopyService(db: Db) {
     try {
       const previousWatchlist = (await loadWatchlist(companyId)).map(watchedWalletFromRow);
       const leaderboard = await client.listLeaderboard(runtimeConfig.selectorMaxCandidates);
-      const candidates = await mapWithConcurrency(leaderboard, 5, async (entry): Promise<WalletSelectorCandidateScore> => {
+      const selectionSeedEntries = new Map<string, PolymarketLeaderboardEntry>();
+      for (const entry of leaderboard) {
+        selectionSeedEntries.set(normalizeWalletAddress(entry.proxyWallet), {
+          ...entry,
+          proxyWallet: normalizeWalletAddress(entry.proxyWallet),
+        });
+      }
+      for (const wallet of previousWatchlist) {
+        if (selectionSeedEntries.has(wallet.walletAddress)) continue;
+        selectionSeedEntries.set(wallet.walletAddress, watchedWalletSeedEntry(wallet));
+      }
+      const leaderboardSeeds = [...selectionSeedEntries.values()];
+      const candidates = await mapWithConcurrency(leaderboardSeeds, 5, async (entry): Promise<WalletSelectorCandidateScore> => {
         try {
           const walletAddress = normalizeWalletAddress(entry.proxyWallet);
           const [positions, closedPositions, trades] = await Promise.all([
@@ -1007,6 +1248,7 @@ export function polymarketCopyService(db: Db) {
             closedPositions,
             trades,
             now,
+            closedPositionsFetchCeiling: client.getClosedPositionsFetchCeiling(),
           }, toWeightSet(runtimeConfig));
         } catch (error) {
           log.warn({ err: error, walletAddress: entry.proxyWallet }, "wallet candidate fetch failed");
@@ -1018,6 +1260,7 @@ export function polymarketCopyService(db: Db) {
             closedPositions: [],
             trades: [],
             now,
+            closedPositionsFetchCeiling: client.getClosedPositionsFetchCeiling(),
           }, toWeightSet(runtimeConfig));
           candidate.eligible = false;
           candidate.eligibilityReasons = [...candidate.eligibilityReasons, "source_fetch_failed"];
@@ -1275,10 +1518,6 @@ export function polymarketCopyService(db: Db) {
       log.info({ companyId, workerKey }, "skipping polymarket worker because a run is already active");
       return { workerKey, skipped: true, reason: "already_running" };
     }
-    const liveDispatchReadiness =
-      runtimeConfig.mode === "live" && runtimeConfig.liveEnabled && !runtimeConfig.tradingKillSwitch
-        ? await inspectPolymarketAuthReadiness(db, companyId, runtimeConfig)
-        : null;
 
     const now = new Date();
     const [workerRun] = await db
@@ -1316,16 +1555,39 @@ export function polymarketCopyService(db: Db) {
       });
 
       const auditEntries: LogActivityInput[] = [];
+      const startOfDay = new Date(now);
+      startOfDay.setHours(0, 0, 0, 0);
+      const baselineRow = await db
+        .select({
+          createdAt: activityLog.createdAt,
+          details: activityLog.details,
+        })
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, "polymarket.paper_baseline.set"),
+        ))
+        .orderBy(desc(activityLog.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const baselineStartedAtRaw = baselineRow?.details?.startedAt;
+      const activePaperStartedAt =
+        safeDate(
+          baselineStartedAtRaw instanceof Date || typeof baselineStartedAtRaw === "string"
+            ? baselineStartedAtRaw
+            : null,
+        ) ?? baselineRow?.createdAt ?? runtimeConfig.updatedAt;
+      const realizedLossWindowStart =
+        startOfDay.getTime() > activePaperStartedAt.getTime() ? startOfDay : activePaperStartedAt;
       const openTradeRows = await db
         .select()
         .from(polymarketPaperTrades)
         .where(and(
           eq(polymarketPaperTrades.companyId, companyId),
           eq(polymarketPaperTrades.status, "open"),
+          gte(polymarketPaperTrades.openedAt, activePaperStartedAt),
         ));
       const openTradeMap = new Map(openTradeRows.map((trade) => [`${trade.sourceWalletAddress}:${trade.marketId}:${trade.side}`, trade]));
-      const startOfDay = new Date(now);
-      startOfDay.setHours(0, 0, 0, 0);
       const [{ dailyRealizedLossUsd: lossValue }] = await db
         .select({
           dailyRealizedLossUsd: sql<number>`coalesce(sum(case when ${polymarketPaperTrades.realizedPnlUsd} < 0 then ${polymarketPaperTrades.realizedPnlUsd} else 0 end), 0)`,
@@ -1333,11 +1595,23 @@ export function polymarketCopyService(db: Db) {
         .from(polymarketPaperTrades)
         .where(and(
           eq(polymarketPaperTrades.companyId, companyId),
-          gte(polymarketPaperTrades.lastUpdatedAt, startOfDay),
+          gte(polymarketPaperTrades.lastUpdatedAt, realizedLossWindowStart),
+          gte(polymarketPaperTrades.openedAt, activePaperStartedAt),
+        ));
+      const [{ totalRealizedPnlUsd: realizedValue }] = await db
+        .select({
+          totalRealizedPnlUsd: sql<number>`coalesce(sum(${polymarketPaperTrades.realizedPnlUsd}), 0)`,
+        })
+        .from(polymarketPaperTrades)
+        .where(and(
+          eq(polymarketPaperTrades.companyId, companyId),
+          gte(polymarketPaperTrades.openedAt, activePaperStartedAt),
         ));
       let runningDailyRealizedLossUsd = Number(lossValue ?? 0);
+      let runningTotalRealizedPnlUsd = Number(realizedValue ?? 0);
 
       const insertedSignals: PolymarketCopySignal[] = [];
+      const acceptedMirrorQueue: Array<{ signal: PolymarketCopySignal; paperTradeId: string | null }> = [];
       await db.transaction(async (tx) => {
         for (const result of walletResults) {
           const [snapshotRow] = await tx
@@ -1414,6 +1688,7 @@ export function polymarketCopyService(db: Db) {
             config: runtimeConfig,
             signal,
             openTrades: openTradeList,
+            totalRealizedPnlUsd: runningTotalRealizedPnlUsd,
             dailyRealizedLossUsd: runningDailyRealizedLossUsd,
             now,
           });
@@ -1463,14 +1738,18 @@ export function polymarketCopyService(db: Db) {
               ? paperTradeFromRow(openTradeMap.get(tradeKey)!)
               : null;
             const simulation = applySignalToPaperTrade({
+              config: runtimeConfig,
               signal,
               existingTrade,
+              openTrades: openTradeList,
+              totalRealizedPnlUsd: runningTotalRealizedPnlUsd,
               sourceWalletAddress: signal.sourceWalletAddress,
-              paperTradeUsdPerSignal: runtimeConfig.paperTradeUsdPerSignal,
               now,
             });
 
             if (simulation) {
+              let mirrorPaperTradeId: string | null = null;
+
               if (existingTrade) {
                 const [updatedTrade] = await tx
                   .update(polymarketPaperTrades)
@@ -1496,6 +1775,7 @@ export function polymarketCopyService(db: Db) {
                   })
                   .where(eq(polymarketPaperTrades.id, existingTrade.id))
                   .returning();
+                mirrorPaperTradeId = updatedTrade.id;
                 if (updatedTrade.status === "closed") {
                   openTradeMap.delete(tradeKey);
                 } else {
@@ -1504,6 +1784,7 @@ export function polymarketCopyService(db: Db) {
                 if ((simulation.event?.realizedPnlUsd ?? 0) < 0) {
                   runningDailyRealizedLossUsd += simulation.event?.realizedPnlUsd ?? 0;
                 }
+                runningTotalRealizedPnlUsd += simulation.event?.realizedPnlUsd ?? 0;
                 if (simulation.event) {
                   await tx.insert(polymarketPaperTradeEvents).values({
                     companyId,
@@ -1541,6 +1822,7 @@ export function polymarketCopyService(db: Db) {
                     updatedAt: now,
                   })
                   .returning();
+                mirrorPaperTradeId = createdTrade.id;
                 if (createdTrade.status === "open") {
                   openTradeMap.set(tradeKey, createdTrade);
                 }
@@ -1572,25 +1854,10 @@ export function polymarketCopyService(db: Db) {
                 }
               }
 
-              const dispatch = evaluatePolymarketLiveDispatch({
-                config: runtimeConfig,
-                authReadiness: liveDispatchReadiness,
-              });
-              if (dispatch) {
-                auditEntries.push({
-                  companyId,
-                  actorType: "system",
-                  actorId: POLYMARKET_COPY_SYSTEM_ACTOR_ID,
-                  action: dispatch.status === "blocked"
-                    ? "polymarket.live_dispatch.blocked"
-                    : "polymarket.live_dispatch.not_implemented",
-                  entityType: "polymarket_signal",
-                  entityId: signal.id,
-                  details: {
-                    reasonCode: dispatch.reasonCode,
-                    mode: runtimeConfig.mode,
-                    ...dispatch.details,
-                  },
+              if (mirrorPaperTradeId) {
+                acceptedMirrorQueue.push({
+                  signal,
+                  paperTradeId: mirrorPaperTradeId,
                 });
               }
             }
@@ -1631,6 +1898,92 @@ export function polymarketCopyService(db: Db) {
           })
           .where(eq(polymarketWorkerRuns.id, workerRun.id));
       });
+
+      for (const mirrorJob of acceptedMirrorQueue) {
+        try {
+          const paperTradeRow = mirrorJob.paperTradeId
+            ? await db
+              .select()
+              .from(polymarketPaperTrades)
+              .where(eq(polymarketPaperTrades.id, mirrorJob.paperTradeId))
+              .limit(1)
+              .then((rows) => rows[0] ?? null)
+            : null;
+          const storedMirrorOrder = await upsertKalshiMirrorOrder(
+            companyId,
+            await mirrorSignalToKalshi({
+              db,
+              companyId,
+              runtimeConfig,
+              signal: mirrorJob.signal,
+              paperTrade: paperTradeRow ? paperTradeFromRow(paperTradeRow) : null,
+            }),
+          );
+          auditEntries.push({
+            companyId,
+            actorType: "system",
+            actorId: POLYMARKET_COPY_SYSTEM_ACTOR_ID,
+            action: kalshiMirrorAuditAction(storedMirrorOrder.executionStatus),
+            entityType: "polymarket_kalshi_mirror_order",
+            entityId: storedMirrorOrder.id,
+            details: {
+              signalId: mirrorJob.signal.id,
+              sourceWalletAddress: mirrorJob.signal.sourceWalletAddress,
+              executionMode: storedMirrorOrder.executionMode,
+              executionStatus: storedMirrorOrder.executionStatus,
+              matchStatus: storedMirrorOrder.matchStatus,
+              rejectionReason: storedMirrorOrder.rejectionReason,
+              kalshiMarketTicker: storedMirrorOrder.kalshiMarketTicker,
+              kalshiMarketTitle: storedMirrorOrder.kalshiMarketTitle,
+              notionalUsd: storedMirrorOrder.notionalUsd,
+              contractCount: storedMirrorOrder.contractCount,
+            },
+          });
+        } catch (error) {
+          const storedMirrorOrder = await upsertKalshiMirrorOrder(companyId, {
+            signalId: mirrorJob.signal.id,
+            sourceWalletAddress: mirrorJob.signal.sourceWalletAddress,
+            cadence: mirrorJob.signal.cadence,
+            sourceMarketId: mirrorJob.signal.marketId,
+            sourceMarketTitle: mirrorJob.signal.marketTitle,
+            sourceAction: mirrorJob.signal.action,
+            sourceSide: mirrorJob.signal.side,
+            executionMode: runtimeConfig.kalshiExecutionMode,
+            matchStatus: "rejected",
+            executionStatus: "execution_failed",
+            rejectionReason: "kalshi_mirror_unhandled_error",
+            matchConfidence: null,
+            matchQuality: null,
+            kalshiEventTicker: null,
+            kalshiMarketTicker: null,
+            kalshiMarketTitle: null,
+            kalshiSide: null,
+            orderAction: null,
+            contractCount: null,
+            limitPriceDollars: null,
+            notionalUsd: null,
+            metadata: {
+              error: error instanceof Error ? error.message : String(error),
+            },
+          });
+          auditEntries.push({
+            companyId,
+            actorType: "system",
+            actorId: POLYMARKET_COPY_SYSTEM_ACTOR_ID,
+            action: kalshiMirrorAuditAction(storedMirrorOrder.executionStatus),
+            entityType: "polymarket_kalshi_mirror_order",
+            entityId: storedMirrorOrder.id,
+            details: {
+              signalId: mirrorJob.signal.id,
+              sourceWalletAddress: mirrorJob.signal.sourceWalletAddress,
+              executionMode: storedMirrorOrder.executionMode,
+              executionStatus: storedMirrorOrder.executionStatus,
+              matchStatus: storedMirrorOrder.matchStatus,
+              rejectionReason: storedMirrorOrder.rejectionReason,
+            },
+          });
+        }
+      }
 
       const artifactPath = await writePolymarketArtifact(runtimeConfig.artifactRootPath, [
         workerKey,
@@ -1715,6 +2068,54 @@ export function polymarketCopyService(db: Db) {
     };
   }
 
+  async function resetPaperBaseline(companyId: string, actor: ServiceActor, reason: string = "manual") {
+    const runtimeConfig = await getRuntimeConfig(companyId);
+    const now = new Date();
+    const [counts] = await db
+      .select({
+        totalTrades: sql<number>`count(*)`,
+        openTrades: sql<number>`count(*) filter (where ${polymarketPaperTrades.status} = 'open')`,
+        closedTrades: sql<number>`count(*) filter (where ${polymarketPaperTrades.status} = 'closed')`,
+      })
+      .from(polymarketPaperTrades)
+      .where(eq(polymarketPaperTrades.companyId, companyId));
+
+    const scopedOutOpenTrades = Number(counts?.openTrades ?? 0);
+    const scopedOutClosedTrades = Number(counts?.closedTrades ?? 0);
+    const scopedOutTradeCount = Number(counts?.totalTrades ?? 0);
+
+    await appendAuditEntries([{
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: "polymarket.paper_baseline.set",
+      entityType: "polymarket_runtime_config",
+      entityId: companyId,
+      details: {
+        reason,
+        label: "Paper test baseline",
+        note: "Paper session reset. Existing paper trades remain stored for audit and are scoped out of the active paper session.",
+        startedAt: now.toISOString(),
+        startingBankrollUsd: runtimeConfig.paperStartingBankrollUsd,
+        scopedOutOpenTrades,
+        scopedOutClosedTrades,
+        scopedOutTradeCount,
+      },
+    }]);
+
+    return {
+      baseline: {
+        startedAt: now,
+        source: "manual_marker" as const,
+        label: "Paper test baseline",
+        startingBankrollUsd: runtimeConfig.paperStartingBankrollUsd,
+      },
+      scopedOutOpenTrades,
+      scopedOutClosedTrades,
+      scopedOutTradeCount,
+    };
+  }
+
   async function tickAllCompanies(now: Date = new Date()) {
     const activeCompanies = await db
       .select({ id: companies.id })
@@ -1771,6 +2172,7 @@ export function polymarketCopyService(db: Db) {
     getRuntimeConfig,
     updateRuntimeConfig,
     getDashboard,
+    resetPaperBaseline,
     checkAuthReadiness,
     deriveApiCredentials,
     runWalletSelection,

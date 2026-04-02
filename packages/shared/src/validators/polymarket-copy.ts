@@ -17,6 +17,8 @@ const SUPPORTED_POLYMARKET_AUTH_ENV_KEYS = new Set([
   "POLYMARKET_API_SECRET",
   "POLYMARKET_API_PASSPHRASE",
   "POLYMARKET_FUNDER_ADDRESS",
+  "KALSHI_API_KEY_ID",
+  "KALSHI_PRIVATE_KEY",
 ]);
 
 export const patchPolymarketCopyRuntimeConfigSchema = z.object({
@@ -40,6 +42,21 @@ export const patchPolymarketCopyRuntimeConfigSchema = z.object({
   minWalletScore: z.number().min(0).max(1).optional(),
   minSignalMateriality: z.number().min(0).optional(),
   maxSpreadBps: z.number().int().min(0).max(100_000).optional(),
+  minTradeSizePct: z.number().min(0).max(100).optional(),
+  maxTradeSizePct: z.number().min(0).max(100).optional(),
+  maxExposurePerMarketPct: z.number().min(0).max(100).optional(),
+  maxExposurePerWalletPct: z.number().min(0).max(100).optional(),
+  maxTotalOpenExposurePct: z.number().min(0).max(100).optional(),
+  dynamicSizing: z.boolean().optional(),
+  dynamicSizingBasis: z.enum(["current_exposure"]).optional(),
+  positionCountBasedSizing: z.boolean().optional(),
+  paperStartingBankrollUsd: z.number().positive().optional(),
+  activeTradingCapitalMode: z.enum(["capped_equity"]).optional(),
+  activeTradingCapitalCapUsd: z.number().positive().optional(),
+  kalshiExecutionMode: z.enum(["disabled", "dry_run", "live"]).optional(),
+  kalshiApiBaseUrl: z.string().trim().min(1).optional(),
+  monthlyTargetUsd: z.number().min(0).optional(),
+  profitSweepReserveUsd: z.number().min(0).optional(),
   staleSignalThresholdMinutes: z.number().int().min(1).max(10_080).optional(),
   maxExposurePerMarket: z.number().min(0).optional(),
   maxTotalOpenPaperExposure: z.number().min(0).optional(),
@@ -82,6 +99,18 @@ export const patchPolymarketCopyRuntimeConfigSchema = z.object({
         path: ["efficiencyWeight"],
       });
     }
+  }
+
+  if (
+    typeof value.minTradeSizePct === "number"
+    && typeof value.maxTradeSizePct === "number"
+    && value.minTradeSizePct > value.maxTradeSizePct
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Minimum trade size percentage cannot exceed the maximum trade size percentage",
+      path: ["minTradeSizePct"],
+    });
   }
 });
 

@@ -45,7 +45,11 @@ export interface PolymarketPositionEntry {
   negativeRisk: boolean;
 }
 
-export interface PolymarketClosedPositionEntry extends Omit<PolymarketPositionEntry, "size" | "initialValue" | "currentValue" | "cashPnl" | "percentPnl" | "percentRealizedPnl" | "negativeRisk"> {
+export interface PolymarketClosedPositionEntry
+  extends Omit<
+    PolymarketPositionEntry,
+    "size" | "initialValue" | "currentValue" | "cashPnl" | "percentPnl" | "percentRealizedPnl" | "negativeRisk"
+  > {
   timestamp: number;
 }
 
@@ -91,14 +95,64 @@ export interface PolymarketOfficialClient {
   listLeaderboard(maxCandidates: number): Promise<PolymarketLeaderboardEntry[]>;
   getPositions(walletAddress: string): Promise<PolymarketPositionEntry[]>;
   getClosedPositions(walletAddress: string): Promise<PolymarketClosedPositionEntry[]>;
+  getClosedPositionsFetchCeiling(): number;
   getTrades(walletAddress: string): Promise<PolymarketTradeEntry[]>;
   getOrderBook(assetId: string): Promise<PolymarketOrderBookSnapshot | null>;
+}
+
+const DEFAULT_CLOSED_POSITIONS_PAGE_SIZE = 50;
+const DEFAULT_CLOSED_POSITIONS_MAX_PAGES = 12;
+const DEFAULT_TRADES_LIMIT = 100;
+
+class PolymarketRequestError extends Error {
+  status: number;
+  body: string;
+  url: string;
+
+  constructor(status: number, url: string, body: string) {
+    super(`Polymarket request failed (${status}) for ${url}: ${body.slice(0, 240)}`);
+    this.name = "PolymarketRequestError";
+    this.status = status;
+    this.body = body;
+    this.url = url;
+  }
+}
+
+function isMissingOrderBookError(error: unknown): boolean {
+  return error instanceof PolymarketRequestError
+    && error.status === 404
+    && /no orderbook exists for the requested token id/i.test(error.body);
+}
+
+function positiveIntegerFromEnv(value: string | undefined, fallback: number, max: number): number {
+  const parsed = Number(value ?? "");
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.min(max, Math.floor(parsed));
+}
+
+function sortByTimestampDesc<T extends { timestamp: number }>(items: T[]): T[] {
+  return items.slice().sort((left, right) => {
+    const leftTimestamp = Number.isFinite(left.timestamp) ? left.timestamp : 0;
+    const rightTimestamp = Number.isFinite(right.timestamp) ? right.timestamp : 0;
+    return rightTimestamp - leftTimestamp;
+  });
 }
 
 export function createPolymarketOfficialClient(): PolymarketOfficialClient {
   const dataApiBase = process.env.POLYMARKET_DATA_API_BASE_URL ?? "https://data-api.polymarket.com";
   const clobBase = process.env.POLYMARKET_CLOB_BASE_URL ?? "https://clob.polymarket.com";
   const log = logger.child({ service: "polymarket-official-client" });
+  const closedPositionsPageSize = positiveIntegerFromEnv(
+    process.env.POLYMARKET_CLOSED_POSITIONS_PAGE_SIZE,
+    DEFAULT_CLOSED_POSITIONS_PAGE_SIZE,
+    DEFAULT_CLOSED_POSITIONS_PAGE_SIZE,
+  );
+  const closedPositionsMaxPages = positiveIntegerFromEnv(
+    process.env.POLYMARKET_CLOSED_POSITIONS_MAX_PAGES,
+    DEFAULT_CLOSED_POSITIONS_MAX_PAGES,
+    12,
+  );
+  const tradesLimit = positiveIntegerFromEnv(process.env.POLYMARKET_TRADES_LIMIT, DEFAULT_TRADES_LIMIT, 250);
 
   async function fetchJson<T>(url: string): Promise<T> {
     const response = await fetch(url, {
@@ -110,9 +164,77 @@ export function createPolymarketOfficialClient(): PolymarketOfficialClient {
     });
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new Error(`Polymarket request failed (${response.status}) for ${url}: ${body.slice(0, 240)}`);
+      throw new PolymarketRequestError(response.status, url, body);
     }
     return response.json() as Promise<T>;
+  }
+
+  function withDataApiParams(path: string, params: Record<string, string | number | null | undefined>): string {
+    const url = new URL(path, dataApiBase);
+    for (const [key, value] of Object.entries(params)) {
+      if (value == null || value === "") continue;
+      url.searchParams.set(key, String(value));
+    }
+    return url.toString();
+  }
+
+  async function fetchOffsetPages<T>(options: {
+    path: string;
+    params: Record<string, string | number | null | undefined>;
+    pageSize: number;
+    maxPages: number;
+    dedupeKey?: (item: T) => string | null;
+  }): Promise<T[]> {
+    const items: T[] = [];
+    const seen = options.dedupeKey ? new Set<string>() : null;
+
+    for (let pageIndex = 0; pageIndex < options.maxPages; pageIndex += 1) {
+      const offset = pageIndex * options.pageSize;
+      const batch = await fetchJson<T[]>(
+        withDataApiParams(options.path, {
+          ...options.params,
+          limit: options.pageSize,
+          offset,
+        }),
+      );
+
+      if (!Array.isArray(batch) || batch.length === 0) break;
+
+      for (const item of batch) {
+        const dedupeKey = options.dedupeKey?.(item) ?? null;
+        if (!seen || !dedupeKey) {
+          items.push(item);
+          continue;
+        }
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+        items.push(item);
+      }
+
+      if (batch.length < options.pageSize) break;
+    }
+
+    return items;
+  }
+
+  function closedPositionKey(entry: PolymarketClosedPositionEntry): string {
+    return [
+      normalizeWalletAddress(entry.proxyWallet),
+      entry.conditionId,
+      entry.asset,
+      Number(entry.timestamp || 0),
+    ].join(":");
+  }
+
+  function tradeKey(entry: PolymarketTradeEntry): string {
+    return [
+      normalizeWalletAddress(entry.proxyWallet),
+      entry.transactionHash,
+      entry.asset,
+      entry.conditionId,
+      Number(entry.timestamp || 0),
+      entry.side,
+    ].join(":");
   }
 
   return {
@@ -126,17 +248,38 @@ export function createPolymarketOfficialClient(): PolymarketOfficialClient {
 
     async getPositions(walletAddress) {
       const normalized = normalizeWalletAddress(walletAddress);
-      return fetchJson<PolymarketPositionEntry[]>(`${dataApiBase}/positions?user=${normalized}`);
+      return fetchJson<PolymarketPositionEntry[]>(withDataApiParams("/positions", { user: normalized }));
     },
 
     async getClosedPositions(walletAddress) {
       const normalized = normalizeWalletAddress(walletAddress);
-      return fetchJson<PolymarketClosedPositionEntry[]>(`${dataApiBase}/closed-positions?user=${normalized}`);
+      const rows = await fetchOffsetPages<PolymarketClosedPositionEntry>({
+        path: "/v1/closed-positions",
+        params: { user: normalized },
+        pageSize: closedPositionsPageSize,
+        maxPages: closedPositionsMaxPages,
+        dedupeKey: closedPositionKey,
+      });
+      if (rows.length > closedPositionsPageSize) {
+        log.debug({ walletAddress: normalized, closedPositions: rows.length }, "expanded closed position history");
+      }
+      return sortByTimestampDesc(rows);
+    },
+
+    getClosedPositionsFetchCeiling() {
+      return closedPositionsPageSize * closedPositionsMaxPages;
     },
 
     async getTrades(walletAddress) {
       const normalized = normalizeWalletAddress(walletAddress);
-      return fetchJson<PolymarketTradeEntry[]>(`${dataApiBase}/trades?user=${normalized}`);
+      const rows = await fetchOffsetPages<PolymarketTradeEntry>({
+        path: "/trades",
+        params: { user: normalized },
+        pageSize: tradesLimit,
+        maxPages: 1,
+        dedupeKey: tradeKey,
+      });
+      return sortByTimestampDesc(rows);
     },
 
     async getOrderBook(assetId) {
@@ -156,6 +299,9 @@ export function createPolymarketOfficialClient(): PolymarketOfficialClient {
           ...spread,
         };
       } catch (error) {
+        if (isMissingOrderBookError(error)) {
+          return null;
+        }
         log.warn({ err: error, assetId }, "order book fetch failed");
         return null;
       }

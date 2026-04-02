@@ -23,8 +23,8 @@ import { useSidebar } from "../context/SidebarContext";
 import { useTheme } from "../context/ThemeContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
+import { useRouteCompanySync } from "../hooks/useRouteCompanySync";
 import { healthApi } from "../api/health";
-import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
 import {
   DEFAULT_INSTANCE_SETTINGS_PATH,
   normalizeRememberedInstanceSettingsPath,
@@ -53,10 +53,7 @@ export function Layout() {
   const {
     companies,
     loading: companiesLoading,
-    selectedCompany,
     selectedCompanyId,
-    selectionSource,
-    setSelectedCompanyId,
   } = useCompany();
   const { theme, toggleTheme } = useTheme();
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
@@ -68,13 +65,7 @@ export function Layout() {
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const [instanceSettingsTarget, setInstanceSettingsTarget] = useState<string>(() => readRememberedInstanceSettingsPath());
   const nextTheme = theme === "dark" ? "light" : "dark";
-  const matchedCompany = useMemo(() => {
-    if (!companyPrefix) return null;
-    const requestedPrefix = companyPrefix.toUpperCase();
-    return companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix) ?? null;
-  }, [companies, companyPrefix]);
-  const hasUnknownCompanyPrefix =
-    Boolean(companyPrefix) && !companiesLoading && companies.length > 0 && !matchedCompany;
+  const { hasUnknownCompanyPrefix } = useRouteCompanySync(companyPrefix);
   const { data: health } = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
@@ -94,47 +85,6 @@ export function Layout() {
       openOnboarding();
     }
   }, [companies, companiesLoading, openOnboarding, health?.deploymentMode]);
-
-  useEffect(() => {
-    if (!companyPrefix || companiesLoading || companies.length === 0) return;
-
-    if (!matchedCompany) {
-      const fallback = (selectedCompanyId ? companies.find((company) => company.id === selectedCompanyId) : null)
-        ?? companies[0]
-        ?? null;
-      if (fallback && selectedCompanyId !== fallback.id) {
-        setSelectedCompanyId(fallback.id, { source: "route_sync" });
-      }
-      return;
-    }
-
-    if (companyPrefix !== matchedCompany.issuePrefix) {
-      const suffix = location.pathname.replace(/^\/[^/]+/, "");
-      navigate(`/${matchedCompany.issuePrefix}${suffix}${location.search}`, { replace: true });
-      return;
-    }
-
-    if (
-      shouldSyncCompanySelectionFromRoute({
-        selectionSource,
-        selectedCompanyId,
-        routeCompanyId: matchedCompany.id,
-      })
-    ) {
-      setSelectedCompanyId(matchedCompany.id, { source: "route_sync" });
-    }
-  }, [
-    companyPrefix,
-    companies,
-    companiesLoading,
-    matchedCompany,
-    location.pathname,
-    location.search,
-    navigate,
-    selectionSource,
-    selectedCompanyId,
-    setSelectedCompanyId,
-  ]);
 
   const togglePanel = togglePanelVisible;
 
@@ -419,7 +369,7 @@ export function Layout() {
               {hasUnknownCompanyPrefix ? (
                 <NotFoundPage
                   scope="invalid_company_prefix"
-                  requestedPrefix={companyPrefix ?? selectedCompany?.issuePrefix}
+                  requestedPrefix={companyPrefix}
                 />
               ) : (
                 <Outlet />

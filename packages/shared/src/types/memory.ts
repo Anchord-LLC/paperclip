@@ -4,12 +4,6 @@ export type MemoryBindingStatus = "active" | "disabled";
 export type MemoryScopeKind = PluginStateScopeKind;
 export type MemoryActorType = "agent" | "user" | "system";
 
-export interface MemoryProviderCapabilities {
-  write?: boolean;
-  read?: boolean;
-  query?: boolean;
-}
-
 export interface MemoryBinding {
   id: string;
   companyId: string;
@@ -92,61 +86,4 @@ export interface ListMemoryOperationsInput {
   companyId: string;
   bindingId?: string;
   limit?: number;
-}
-
-export interface MemoryRecordHandle {
-  providerKey: string;
-  providerRecordId: string;
-}
-
-export interface MemorySnippet {
-  handle: MemoryRecordHandle;
-  stateKey: string;
-  text: string;
-  scopeKind: MemoryScopeKind;
-  scopeId: string | null;
-  namespace: string;
-  score?: number;
-  metadata?: Record<string, unknown>;
-  updatedAt: Date;
-}
-
-export interface MemoryWriteRequest {
-  companyId: string;
-  bindingKey: string;
-  scopeKind: MemoryScopeKind;
-  scopeId?: string | null;
-  namespace?: string;
-  stateKey: string;
-  content: string;
-  metadata?: Record<string, unknown>;
-  actorType: MemoryActorType;
-  actorId?: string | null;
-}
-
-export interface MemoryReadRequest {
-  companyId: string;
-  bindingKey: string;
-  scopeKind: MemoryScopeKind;
-  scopeId?: string | null;
-  namespace?: string;
-  stateKey: string;
-  actorType: MemoryActorType;
-  actorId?: string | null;
-}
-
-export interface MemoryQueryRequest {
-  companyId: string;
-  bindingKey: string;
-  scopeKind: MemoryScopeKind;
-  scopeId?: string | null;
-  namespace?: string;
-  query: string;
-  limit?: number;
-  actorType: MemoryActorType;
-  actorId?: string | null;
-}
-
-export interface MemoryQueryResult {
-  snippets: MemorySnippet[];
 }

@@ -3,6 +3,7 @@ import type {
   AgentEnvConfig,
   PatchPolymarketCopyRuntimeConfig,
   PolymarketCopyCadence,
+  PolymarketCopyKalshiExecutionMode,
   PolymarketCopyMode,
   PolymarketCopyRuntimeConfig,
   PolymarketCopySignal,
@@ -19,6 +20,7 @@ export const POLYMARKET_AUTH_ENV_KEYS = [
   "POLYMARKET_FUNDER_ADDRESS",
 ] as const;
 export const POLYMARKET_REQUIRED_LIVE_AUTH_ENV_KEYS = [...POLYMARKET_AUTH_ENV_KEYS];
+export const KALSHI_AUTH_ENV_KEYS = ["KALSHI_API_KEY_ID", "KALSHI_PRIVATE_KEY"] as const;
 
 const LEGACY_POLYMARKET_ARTIFACT_ROOT = "/mnt/ssd/paperclip/projects/polymarket";
 
@@ -58,6 +60,21 @@ export interface PolymarketCopyDefaults {
   minWalletScore: number;
   minSignalMateriality: number;
   maxSpreadBps: number;
+  minTradeSizePct: number;
+  maxTradeSizePct: number;
+  maxExposurePerMarketPct: number;
+  maxExposurePerWalletPct: number;
+  maxTotalOpenExposurePct: number;
+  dynamicSizing: boolean;
+  dynamicSizingBasis: PolymarketCopyRuntimeConfig["dynamicSizingBasis"];
+  positionCountBasedSizing: boolean;
+  paperStartingBankrollUsd: number;
+  activeTradingCapitalMode: PolymarketCopyRuntimeConfig["activeTradingCapitalMode"];
+  activeTradingCapitalCapUsd: number;
+  kalshiExecutionMode: PolymarketCopyKalshiExecutionMode;
+  kalshiApiBaseUrl: string;
+  monthlyTargetUsd: number;
+  profitSweepReserveUsd: number;
   staleSignalThresholdMinutes: number;
   maxExposurePerMarket: number;
   maxTotalOpenPaperExposure: number;
@@ -108,9 +125,9 @@ export function getPolymarketCopyDefaults(): PolymarketCopyDefaults {
     walletSelectionHour: Number(process.env.POLYMARKET_WALLET_SELECTION_HOUR ?? 6),
     walletSelectionMinute: Number(process.env.POLYMARKET_WALLET_SELECTION_MINUTE ?? 0),
     selectorMaxCandidates: Number(process.env.POLYMARKET_SELECTOR_MAX_CANDIDATES ?? 25),
-    targetWatchedWalletCount: 10,
+    targetWatchedWalletCount: 20,
     targetBenchWalletCount: 10,
-    maxDailyReplacements: 2,
+    maxDailyReplacements: 4,
     selectorReplacementScoreDelta: 0.08,
     efficiencyWeight: 0.35,
     consistencyWeight: 0.2,
@@ -120,6 +137,21 @@ export function getPolymarketCopyDefaults(): PolymarketCopyDefaults {
     minWalletScore: 0.45,
     minSignalMateriality: 250,
     maxSpreadBps: 800,
+    minTradeSizePct: 7.5,
+    maxTradeSizePct: 12.5,
+    maxExposurePerMarketPct: 15,
+    maxExposurePerWalletPct: 30,
+    maxTotalOpenExposurePct: 90,
+    dynamicSizing: true,
+    dynamicSizingBasis: "current_exposure",
+    positionCountBasedSizing: false,
+    paperStartingBankrollUsd: 100,
+    activeTradingCapitalMode: "capped_equity",
+    activeTradingCapitalCapUsd: 500,
+    kalshiExecutionMode: "dry_run",
+    kalshiApiBaseUrl: process.env.KALSHI_API_BASE_URL?.trim() || "https://api.elections.kalshi.com/trade-api/v2",
+    monthlyTargetUsd: 200,
+    profitSweepReserveUsd: 25,
     staleSignalThresholdMinutes: 30,
     maxExposurePerMarket: 5_000,
     maxTotalOpenPaperExposure: 20_000,
@@ -178,6 +210,21 @@ export function mergeRuntimeConfigPatch(
     minWalletScore: next.minWalletScore,
     minSignalMateriality: next.minSignalMateriality,
     maxSpreadBps: next.maxSpreadBps,
+    minTradeSizePct: next.minTradeSizePct,
+    maxTradeSizePct: next.maxTradeSizePct,
+    maxExposurePerMarketPct: next.maxExposurePerMarketPct,
+    maxExposurePerWalletPct: next.maxExposurePerWalletPct,
+    maxTotalOpenExposurePct: next.maxTotalOpenExposurePct,
+    dynamicSizing: next.dynamicSizing,
+    dynamicSizingBasis: next.dynamicSizingBasis,
+    positionCountBasedSizing: next.positionCountBasedSizing,
+    paperStartingBankrollUsd: next.paperStartingBankrollUsd,
+    activeTradingCapitalMode: next.activeTradingCapitalMode,
+    activeTradingCapitalCapUsd: next.activeTradingCapitalCapUsd,
+    kalshiExecutionMode: next.kalshiExecutionMode,
+    kalshiApiBaseUrl: next.kalshiApiBaseUrl,
+    monthlyTargetUsd: next.monthlyTargetUsd,
+    profitSweepReserveUsd: next.profitSweepReserveUsd,
     staleSignalThresholdMinutes: next.staleSignalThresholdMinutes,
     maxExposurePerMarket: next.maxExposurePerMarket,
     maxTotalOpenPaperExposure: next.maxTotalOpenPaperExposure,
@@ -196,6 +243,11 @@ export function mergeRuntimeConfigPatch(
 export function configuredPolymarketAuthKeys(authEnv: AgentEnvConfig | null | undefined): string[] {
   if (!authEnv) return [];
   return Object.keys(authEnv).filter((key) => POLYMARKET_AUTH_ENV_KEYS.includes(key as (typeof POLYMARKET_AUTH_ENV_KEYS)[number]));
+}
+
+export function configuredKalshiAuthKeys(authEnv: AgentEnvConfig | null | undefined): string[] {
+  if (!authEnv) return [];
+  return Object.keys(authEnv).filter((key) => KALSHI_AUTH_ENV_KEYS.includes(key as (typeof KALSHI_AUTH_ENV_KEYS)[number]));
 }
 
 export function missingRequiredPolymarketAuthKeys(env: Record<string, string>): string[] {

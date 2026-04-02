@@ -340,10 +340,12 @@ export function App() {
           <Route path="projects/:projectId/issues" element={<UnprefixedBoardRedirect />} />
         <Route path="projects/:projectId/issues/:filter" element={<UnprefixedBoardRedirect />} />
         <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
-        <Route path="desk/polymarket" element={<UnprefixedBoardRedirect />} />
+        <Route path="desk/polymarket" element={<Navigate to="overview" replace />} />
+        <Route path="desk/polymarket/:polymarketPage" element={<PolymarketCopy />} />
         <Route path="trading/copy" element={<Navigate to="/desk/polymarket" replace />} />
         <Route path="tests/ux/runs" element={<UnprefixedBoardRedirect />} />
-        <Route path=":companyPrefix/desk/polymarket" element={<PolymarketCopy />} />
+        <Route path=":companyPrefix/desk/polymarket" element={<Navigate to="overview" replace />} />
+        <Route path=":companyPrefix/desk/polymarket/:polymarketPage" element={<PolymarketCopy />} />
         <Route path=":companyPrefix" element={<Layout />}>
           {boardRoutes()}
         </Route>

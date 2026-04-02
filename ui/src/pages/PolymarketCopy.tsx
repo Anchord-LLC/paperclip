@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AgentEnvConfig,
@@ -6,7 +6,9 @@ import type {
   PolymarketAuthEnvKey,
   PolymarketCopyDashboardData,
   PolymarketCopyPaperTrade,
+  PolymarketCopySecretEnvKey,
   PolymarketCopySignalDecisionRecord,
+  PolymarketKalshiEnvKey,
 } from "@paperclipai/shared";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -14,6 +16,9 @@ import {
   ArrowUpRight,
   BriefcaseBusiness,
   KeyRound,
+  Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
   Radar,
   RefreshCcw,
   ScrollText,
@@ -22,8 +27,10 @@ import {
   TimerReset,
   TrendingUp,
   Wallet,
+  X,
 } from "lucide-react";
 import { Link, useParams } from "@/lib/router";
+import { NavLink } from "react-router-dom";
 import { polymarketCopyApi } from "../api/polymarketCopy";
 import { secretsApi } from "../api/secrets";
 import { EmptyState } from "../components/EmptyState";
@@ -45,7 +52,7 @@ import {
 } from "@/components/ui/select";
 import { NotFoundPage } from "./NotFound";
 
-const AUTH_KEY_ORDER: PolymarketAuthEnvKey[] = [
+const POLYMARKET_AUTH_KEY_ORDER: PolymarketAuthEnvKey[] = [
   "POLYMARKET_PRIVATE_KEY",
   "POLYMARKET_API_KEY",
   "POLYMARKET_API_SECRET",
@@ -53,25 +60,33 @@ const AUTH_KEY_ORDER: PolymarketAuthEnvKey[] = [
   "POLYMARKET_FUNDER_ADDRESS",
 ];
 
-const AUTH_KEY_LABELS: Record<PolymarketAuthEnvKey, string> = {
+const KALSHI_SECRET_KEY_ORDER: PolymarketKalshiEnvKey[] = [
+  "KALSHI_API_KEY_ID",
+  "KALSHI_PRIVATE_KEY",
+];
+
+const SECRET_KEY_LABELS: Record<PolymarketCopySecretEnvKey, string> = {
   POLYMARKET_PRIVATE_KEY: "Private key ref",
   POLYMARKET_API_KEY: "API key ref",
   POLYMARKET_API_SECRET: "API secret ref",
   POLYMARKET_API_PASSPHRASE: "API passphrase ref",
   POLYMARKET_FUNDER_ADDRESS: "Funder address ref",
+  KALSHI_API_KEY_ID: "Kalshi API key ref",
+  KALSHI_PRIVATE_KEY: "Kalshi private key ref",
 };
 
 const DESK_SECTIONS = [
-  { id: "overview", label: "Overview", icon: ActivitySquare },
-  { id: "desk-status", label: "Desk Status", icon: BriefcaseBusiness },
-  { id: "workers", label: "Workers", icon: TimerReset },
-  { id: "wallets", label: "Wallets", icon: Wallet },
-  { id: "signals", label: "Signals", icon: TrendingUp },
-  { id: "paper-trades", label: "Paper Trades", icon: ActivitySquare },
-  { id: "risk-blocks", label: "Risk / Blocks", icon: ShieldAlert },
-  { id: "auth-readiness", label: "Auth Readiness", icon: KeyRound },
-  { id: "live-readiness", label: "Live Readiness", icon: Radar },
-  { id: "audit", label: "Audit", icon: ScrollText },
+  { id: "overview", page: "overview", label: "Overview", icon: ActivitySquare },
+  { id: "performance", page: "performance", label: "Performance", icon: TrendingUp },
+  { id: "desk-status", page: "status", label: "Desk Status", icon: BriefcaseBusiness },
+  { id: "workers", page: "workers", label: "Workers", icon: TimerReset },
+  { id: "wallets", page: "wallets", label: "Wallets", icon: Wallet },
+  { id: "signals", page: "signals", label: "Signals", icon: TrendingUp },
+  { id: "paper-trades", page: "paper-trades", label: "Paper Trades", icon: ActivitySquare },
+  { id: "risk-blocks", page: "risk-blocks", label: "Risk / Blocks", icon: ShieldAlert },
+  { id: "auth-readiness", page: "auth-readiness", label: "Auth Readiness", icon: KeyRound },
+  { id: "live-readiness", page: "live-readiness", label: "Live Readiness", icon: Radar },
+  { id: "audit", page: "audit", label: "Audit", icon: ScrollText },
 ] as const;
 
 const EMPTY_SECRET_REF = "__none__";
@@ -102,6 +117,11 @@ const TABLE_SURFACE_CLASS = "overflow-hidden rounded-[22px] border border-border
 const INSET_SURFACE_CLASS = "rounded-[20px] border border-border/70 bg-muted/35";
 
 type DeskSectionId = (typeof DESK_SECTIONS)[number]["id"];
+type DeskSectionPage = (typeof DESK_SECTIONS)[number]["page"];
+
+function buildDeskSectionPath(page: DeskSectionPage, companyPrefix?: string): string {
+  return companyPrefix ? `/${companyPrefix}/desk/polymarket/${page}` : `/desk/polymarket/${page}`;
+}
 
 function formatUsd(value: number): string {
   return new Intl.NumberFormat("en-US", {
@@ -116,6 +136,97 @@ function formatDate(value: Date | string | null | undefined): string {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "Unknown";
   return date.toLocaleString();
+}
+
+function formatPercent(value: number | null | undefined): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "n/a";
+  return `${value.toFixed(1)}%`;
+}
+
+function formatDurationMinutes(value: number | null | undefined): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "n/a";
+  if (value < 60) return `${Math.round(value)}m`;
+  const hours = Math.floor(value / 60);
+  const minutes = Math.round(value % 60);
+  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value == null || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function walletSelectionSnapshot(metadata: Record<string, unknown> | null | undefined) {
+  const snapshot = asRecord(asRecord(metadata).snapshot);
+  const demotionReasons = Array.isArray(snapshot.demotionReasons)
+    ? snapshot.demotionReasons.filter((reason): reason is string => typeof reason === "string")
+    : [];
+
+  return {
+    winRate: asNumber(snapshot.winRate),
+    resolvedTrades: asNumber(snapshot.resolvedTrades),
+    recentResolvedTrades30d: asNumber(snapshot.recentResolvedTrades30d),
+    lastActivityAt: asString(snapshot.lastActivityAt),
+    activeEligibilityTier: asString(snapshot.activeEligibilityTier),
+    dominantCategory: asString(snapshot.dominantCategory),
+    recentCategoryMixLabel: asString(snapshot.recentCategoryMixLabel),
+    benchEligible: snapshot.benchEligible === true,
+    hasRecentActivity: snapshot.hasRecentActivity === true,
+    sportsHeavy: snapshot.sportsHeavy === true,
+    diversified: snapshot.diversified === true,
+    resolvedTradesLikelyTruncated: snapshot.resolvedTradesLikelyTruncated === true,
+    closedPositionsFetchCeiling: asNumber(snapshot.closedPositionsFetchCeiling),
+    demotionReasons,
+  };
+}
+
+function formatWalletCategory(category: string | null): string {
+  if (!category) return "Unclassified";
+  return category
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function walletStatusLabel(wallet: PolymarketCopyDashboardData["watchedWallets"][number]): string {
+  if (wallet.status === "active") return "Active";
+  if (wallet.status === "bench") return "Bench";
+  return wallet.activatedAt ? "Dropped" : "Rejected";
+}
+
+function walletStatusVariant(wallet: PolymarketCopyDashboardData["watchedWallets"][number]): "secondary" | "outline" | "destructive" {
+  if (wallet.status === "active") return "secondary";
+  if (wallet.status === "bench") return "outline";
+  return wallet.activatedAt ? "destructive" : "outline";
+}
+
+function walletSelectionNote(wallet: PolymarketCopyDashboardData["watchedWallets"][number]): string {
+  const snapshot = walletSelectionSnapshot(wallet.metadata);
+  const truncationNote = snapshot.resolvedTradesLikelyTruncated && snapshot.closedPositionsFetchCeiling != null
+    ? ` Closed history hit the current fetch ceiling (${snapshot.closedPositionsFetchCeiling}+), so lifetime resolved trades may be understated.`
+    : "";
+  if (wallet.status === "active" && snapshot.activeEligibilityTier === "preferred") {
+    return `Preferred active: 70%+ win rate with full longevity and recent resolved-trade proof.${truncationNote}`;
+  }
+  if (wallet.status === "active" && snapshot.activeEligibilityTier === "fallback") {
+    return `Fallback active: 65%+ win rate with full longevity proof when the stronger pool is thin.${truncationNote}`;
+  }
+  if (wallet.status === "bench") {
+    return `Bench: promising copy source, but not yet fully proven for primary copying.${truncationNote}`;
+  }
+  if (snapshot.demotionReasons.length > 0) {
+    return `Dropped for ${snapshot.demotionReasons.join(", ")}.${truncationNote}`;
+  }
+  return `Below the current copy-watch thresholds.${truncationNote}`;
 }
 
 function toneForDecision(decision: string | null | undefined): "outline" | "secondary" | "destructive" {
@@ -137,7 +248,7 @@ function toneForHealth(health: string): "secondary" | "outline" | "destructive" 
   return "outline";
 }
 
-function boundSecretId(authEnv: AgentEnvConfig | null | undefined, key: PolymarketAuthEnvKey): string | null {
+function boundSecretId(authEnv: AgentEnvConfig | null | undefined, key: PolymarketCopySecretEnvKey): string | null {
   const binding = authEnv?.[key];
   if (typeof binding !== "object" || binding == null || Array.isArray(binding)) return null;
   if ((binding as { type?: unknown }).type !== "secret_ref") return null;
@@ -147,7 +258,7 @@ function boundSecretId(authEnv: AgentEnvConfig | null | undefined, key: Polymark
 
 function buildNextAuthEnv(
   authEnv: AgentEnvConfig | null | undefined,
-  key: PolymarketAuthEnvKey,
+  key: PolymarketCopySecretEnvKey,
   secretId: string | null,
 ): AgentEnvConfig | null {
   const next: AgentEnvConfig = { ...(authEnv ?? {}) };
@@ -165,11 +276,15 @@ function secretOptionLabel(secret: CompanySecret): string {
 
 function SectionMenu({
   activeSection,
+  companyPrefix,
   compact = false,
+  collapsed = false,
   onSelect,
 }: {
   activeSection: DeskSectionId;
+  companyPrefix?: string;
   compact?: boolean;
+  collapsed?: boolean;
   onSelect?: (sectionId: DeskSectionId) => void;
 }) {
   return (
@@ -178,10 +293,11 @@ function SectionMenu({
         const Icon = section.icon;
         const isActive = section.id === activeSection;
         return (
-          <a
+          <NavLink
             key={section.id}
-            href={`#${section.id}`}
-            aria-current={isActive ? "true" : undefined}
+            to={buildDeskSectionPath(section.page, companyPrefix)}
+            end
+            aria-current={isActive ? "page" : undefined}
             onClick={() => onSelect?.(section.id)}
             className={
               compact
@@ -190,16 +306,17 @@ function SectionMenu({
                     ? "border-foreground bg-foreground text-background"
                     : "border-border bg-white text-muted-foreground hover:border-foreground/20 hover:text-foreground"
                 }`
-                : `flex items-center gap-3 rounded-[16px] border px-3 py-2.5 text-sm transition-colors ${
+                : `flex items-center ${collapsed ? "justify-center" : "gap-3"} rounded-[14px] border px-3 py-2.5 text-sm transition-colors ${
                   isActive
-                    ? "border-foreground/10 bg-foreground text-background shadow-[0_10px_24px_rgba(15,23,42,0.12)]"
-                    : "border-transparent text-muted-foreground hover:border-border hover:bg-muted/60 hover:text-foreground"
+                    ? "border-[#9ec6e3] bg-[#dff1ff] text-[#103f5c]"
+                    : "border-transparent text-muted-foreground hover:border-[#d0e3f2] hover:bg-[#f0f6fb] hover:text-foreground"
                 }`
             }
+            title={collapsed ? section.label : undefined}
           >
             <Icon className="h-4 w-4 shrink-0" />
-            <span>{section.label}</span>
-          </a>
+            {!collapsed && <span className="truncate">{section.label}</span>}
+          </NavLink>
         );
       })}
     </nav>
@@ -207,20 +324,24 @@ function SectionMenu({
 }
 
 function DeskSection({
+  active = true,
   id,
   title,
   description,
   children,
   actions,
 }: {
+  active?: boolean;
   id: DeskSectionId;
   title: string;
   description?: string;
   children: ReactNode;
   actions?: ReactNode;
 }) {
+  if (!active) return null;
+
   return (
-    <section id={id} className="scroll-mt-40 space-y-4">
+    <section id={id} className="space-y-4">
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div className="space-y-1">
           <h2 className="text-xl font-semibold tracking-tight text-foreground">{title}</h2>
@@ -301,6 +422,476 @@ function OverviewCards({ data }: { data: PolymarketCopyDashboardData }) {
   );
 }
 
+
+function clampProgress(value: number | null | undefined): number {
+  if (typeof value !== "number" || Number.isNaN(value)) return 0;
+  return Math.max(0, Math.min(100, value));
+}
+
+function PerformanceMetricCard({
+  label,
+  value,
+  description,
+}: {
+  label: string;
+  value: ReactNode;
+  description: string;
+}) {
+  return (
+    <div className="rounded-[20px] border border-border/80 bg-white px-4 py-4 shadow-[0_8px_22px_rgba(15,23,42,0.04)]">
+      <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
+      <div className="mt-2 text-2xl font-semibold tracking-tight text-foreground">{value}</div>
+      <div className="mt-1.5 text-xs leading-5 text-muted-foreground">{description}</div>
+    </div>
+  );
+}
+
+function PerformanceTrendChart({
+  points,
+}: {
+  points: Array<{ label: string; value: number }>;
+}) {
+  if (points.length === 0) {
+    return <div className="rounded-[18px] border border-dashed border-border/80 bg-muted/20 p-6 text-sm text-muted-foreground">No performance points yet for this baseline window.</div>;
+  }
+
+  const values = points.map((point) => point.value);
+  const minValue = Math.min(...values);
+  const maxValue = Math.max(...values);
+  const span = Math.max(maxValue - minValue, 1);
+  const coordinates = points.map((point, index) => {
+    const x = points.length === 1 ? 50 : (index / (points.length - 1)) * 100;
+    const y = 36 - (((point.value - minValue) / span) * 28);
+    return `${x},${y}`;
+  });
+  const polyline = coordinates.join(" ");
+  const polygon = `0,36 ${polyline} 100,36`;
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-[18px] border border-border/80 bg-white p-4 shadow-[0_8px_22px_rgba(15,23,42,0.04)]">
+        <svg viewBox="0 0 100 40" className="h-44 w-full">
+          <defs>
+            <linearGradient id="polymarket-equity-fill" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stopColor="rgba(56, 117, 215, 0.24)" />
+              <stop offset="100%" stopColor="rgba(56, 117, 215, 0.03)" />
+            </linearGradient>
+          </defs>
+          <line x1="0" y1="36" x2="100" y2="36" stroke="rgba(148, 163, 184, 0.45)" strokeWidth="0.6" />
+          <polygon points={polygon} fill="url(#polymarket-equity-fill)" />
+          <polyline points={polyline} fill="none" stroke="#2f6fb2" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
+        </svg>
+      </div>
+      <div className="flex flex-wrap justify-between gap-2 text-xs text-muted-foreground">
+        <span>{points[0]?.label ?? "Start"}</span>
+        <span>{points[points.length - 1]?.label ?? "Latest"}</span>
+      </div>
+    </div>
+  );
+}
+
+function PerformanceBarList({
+  items,
+  empty,
+  valueFormatter = formatUsd,
+}: {
+  items: Array<{ label: string; valueUsd: number }>;
+  empty: string;
+  valueFormatter?: (value: number) => string;
+}) {
+  if (items.length === 0) {
+    return <div className="rounded-[18px] border border-dashed border-border/80 bg-muted/20 p-4 text-sm text-muted-foreground">{empty}</div>;
+  }
+
+  const maxValue = Math.max(...items.map((item) => Math.abs(item.valueUsd)), 1);
+
+  return (
+    <div className="space-y-3">
+      {items.map((item) => {
+        const width = `${Math.max(8, (Math.abs(item.valueUsd) / maxValue) * 100)}%`;
+        const negative = item.valueUsd < 0;
+        return (
+          <div key={item.label} className="space-y-1.5">
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <span className="truncate text-foreground">{item.label}</span>
+              <span className={`font-medium ${negative ? "text-destructive" : "text-foreground"}`}>{valueFormatter(item.valueUsd)}</span>
+            </div>
+            <div className="h-2 rounded-full bg-muted/55">
+              <div
+                className={`h-2 rounded-full ${negative ? "bg-[#d86b5f]" : "bg-[#3f7cc4]"}`}
+                style={{ width }}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ProgressBar({
+  value,
+  tone = "blue",
+}: {
+  value: number;
+  tone?: "blue" | "green" | "slate";
+}) {
+  const width = clampProgress(value);
+  const toneClass = tone === "green"
+    ? "bg-[#3d9463]"
+    : tone === "slate"
+      ? "bg-[#64748b]"
+      : "bg-[#2f6fb2]";
+
+  return (
+    <div className="h-2.5 rounded-full bg-muted/55">
+      <div
+        className={`h-2.5 rounded-full ${toneClass}`}
+        style={{ width: `${width}%` }}
+      />
+    </div>
+  );
+}
+
+function GoalProgressGraphic({ performance }: { performance: PolymarketCopyDashboardData["performance"] }) {
+  const progress = clampProgress(performance.targetProgressPct);
+  const ringStyle: CSSProperties = {
+    background: `conic-gradient(${performance.targetAchieved ? "#3d9463" : "#2f6fb2"} ${progress}%, rgba(148,163,184,0.18) ${progress}% 100%)`,
+  };
+
+  return (
+    <Card className={DESK_SURFACE_CLASS}>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">Goal Progress</CardTitle>
+        <CardDescription>Trailing 30d realized PnL against the monthly subscription target.</CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)] lg:items-center">
+        <div className="flex justify-center">
+          <div className="relative h-40 w-40 rounded-full p-3" style={ringStyle}>
+            <div className="flex h-full w-full flex-col items-center justify-center rounded-full bg-white text-center shadow-[inset_0_0_0_1px_rgba(148,163,184,0.14)]">
+              <div className="text-3xl font-semibold tracking-tight text-foreground">{Math.round(progress)}%</div>
+              <div className="mt-1 text-xs uppercase tracking-[0.16em] text-muted-foreground">to goal</div>
+            </div>
+          </div>
+        </div>
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={performance.targetAchieved ? "secondary" : "outline"}>
+              {performance.targetAchieved ? "Goal met" : "In progress"}
+            </Badge>
+            <Badge variant="outline">Trailing 30d: {formatUsd(performance.trailing30dRealizedPnlUsd)}</Badge>
+            <Badge variant="outline">Remaining: {formatUsd(performance.targetGapUsd)}</Badge>
+          </div>
+          <div className="space-y-3 text-sm text-foreground/85">
+            <div>
+              <div className="flex items-center justify-between gap-3 pb-1.5">
+                <span>Monthly target</span>
+                <span className="font-medium">{formatUsd(performance.monthlyTargetUsd)}</span>
+              </div>
+              <ProgressBar value={progress} tone={performance.targetAchieved ? "green" : "blue"} />
+            </div>
+            <div className={`${INSET_SURFACE_CLASS} grid gap-3 p-4 sm:grid-cols-3`}>
+              <div>
+                <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Realized</div>
+                <div className="mt-1 text-lg font-semibold text-foreground">{formatUsd(performance.trailing30dRealizedPnlUsd)}</div>
+              </div>
+              <div>
+                <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Gap</div>
+                <div className="mt-1 text-lg font-semibold text-foreground">{formatUsd(performance.targetGapUsd)}</div>
+              </div>
+              <div>
+                <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Use case</div>
+                <div className="mt-1 text-sm font-medium text-foreground">Subscription coverage</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function CapitalFrameworkGraphic({ performance }: { performance: PolymarketCopyDashboardData["performance"] }) {
+  const walletProgress = clampProgress(performance.capitalProgressPct);
+  const activeCapitalProgress = performance.capitalCapUsd > 0
+    ? clampProgress((performance.activeTradingCapitalUsd / performance.capitalCapUsd) * 100)
+    : 0;
+  const isCapped = performance.currentWalletEquityUsd >= performance.capitalCapUsd;
+
+  return (
+    <Card className={DESK_SURFACE_CLASS}>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">Capital Growth / Cap</CardTitle>
+        <CardDescription>Shows whether the copy desk is still compounding or already capped at active trading capital.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant={isCapped ? "secondary" : "outline"}>{isCapped ? "Capped" : "Growth mode"}</Badge>
+          <Badge variant="outline">Mode: {performance.activeTradingCapitalMode}</Badge>
+          <Badge variant="outline">Sweep reserve: {formatUsd(performance.profitSweepReserveUsd)}</Badge>
+        </div>
+        <div className={`${INSET_SURFACE_CLASS} space-y-4 p-4`}>
+          <div>
+            <div className="flex items-center justify-between gap-3 pb-1.5 text-sm">
+              <span>Wallet equity</span>
+              <span className="font-medium">{formatUsd(performance.currentWalletEquityUsd)} / {formatUsd(performance.capitalCapUsd)}</span>
+            </div>
+            <ProgressBar value={walletProgress} tone={isCapped ? "green" : "blue"} />
+          </div>
+          <div>
+            <div className="flex items-center justify-between gap-3 pb-1.5 text-sm">
+              <span>Active trading capital</span>
+              <span className="font-medium">{formatUsd(performance.activeTradingCapitalUsd)} / {formatUsd(performance.capitalCapUsd)}</span>
+            </div>
+            <ProgressBar value={activeCapitalProgress} tone="slate" />
+          </div>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3 text-sm">
+          <div className="rounded-[18px] border border-border/80 bg-white px-4 py-3">
+            <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Capital cap</div>
+            <div className="mt-1 text-lg font-semibold text-foreground">{formatUsd(performance.capitalCapUsd)}</div>
+          </div>
+          <div className="rounded-[18px] border border-border/80 bg-white px-4 py-3">
+            <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Sweepable profit</div>
+            <div className="mt-1 text-lg font-semibold text-foreground">{formatUsd(performance.sweepableProfitUsd)}</div>
+          </div>
+          <div className="rounded-[18px] border border-border/80 bg-white px-4 py-3">
+            <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">State</div>
+            <div className="mt-1 text-sm font-medium text-foreground">{isCapped ? "Profit above cap can be swept" : "Still compounding toward cap"}</div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function PerformanceView({ data }: { data: PolymarketCopyDashboardData }) {
+  const performance = data.performance;
+  const equityPoints = performance.equityCurve.map((point) => ({
+    label: point.label,
+    value: point.equityUsd,
+  }));
+  const dailyPnlPoints = performance.dailyPnl;
+
+  return (
+    <div className="space-y-4">
+      <Card className={DESK_SURFACE_CLASS}>
+        <CardContent className="space-y-4 p-6">
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Performance Window</div>
+              <div className="mt-1 text-lg font-semibold text-foreground">{performance.baseline.label}</div>
+              <div className="mt-1 text-sm text-muted-foreground">Started {formatDate(performance.baseline.startedAt)} with {formatUsd(performance.baseline.startingBankrollUsd)} launch bankroll. Active trading capital is capped at {formatUsd(performance.capitalCapUsd)}.</div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant={performance.automation.walletSelectorAutoRunActive ? "secondary" : "outline"}>Wallet Selector Auto: {performance.automation.walletSelectorAutoRunActive ? "active" : "off"}</Badge>
+              <Badge variant={performance.automation.monitor5mAutoRunActive ? "secondary" : "outline"}>5m Auto: {performance.automation.monitor5mAutoRunActive ? "active" : "off"}</Badge>
+              <Badge variant={performance.automation.monitor15mAutoRunActive ? "secondary" : "outline"}>15m Auto: {performance.automation.monitor15mAutoRunActive ? "active" : "off"}</Badge>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <PerformanceMetricCard label="Current Wallet Equity" value={formatUsd(performance.currentWalletEquityUsd)} description="Launch bankroll plus realized and unrealized paper PnL." />
+        <PerformanceMetricCard label="Active Trading Capital" value={formatUsd(performance.activeTradingCapitalUsd)} description="Live sizing base after the capped-equity framework is applied." />
+        <PerformanceMetricCard label="Capital Cap" value={formatUsd(performance.capitalCapUsd)} description="Maximum active capital allowed to compound inside the paper test." />
+        <PerformanceMetricCard label="Trailing 30d Realized PnL" value={formatUsd(performance.trailing30dRealizedPnlUsd)} description="Closed paper profit in the trailing 30-day window." />
+        <PerformanceMetricCard label="Monthly Goal ($200)" value={formatUsd(performance.monthlyTargetUsd)} description="Subscription-funding target for the copy desk." />
+        <PerformanceMetricCard label="Sweepable Profit" value={formatUsd(performance.sweepableProfitUsd)} description={`Profit above ${formatUsd(performance.capitalCapUsd)} plus the ${formatUsd(performance.profitSweepReserveUsd)} reserve.`} />
+        <PerformanceMetricCard label="Remaining Gap to Goal" value={formatUsd(performance.targetGapUsd)} description="Additional realized profit needed in the trailing 30-day window." />
+        <PerformanceMetricCard label="Goal Status" value={<Badge variant={performance.targetAchieved ? "secondary" : "outline"}>{performance.targetAchieved ? "Target achieved" : "Below target"}</Badge>} description="Whether current realized performance covers the monthly subscription goal." />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <GoalProgressGraphic performance={performance} />
+        <CapitalFrameworkGraphic performance={performance} />
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <PerformanceMetricCard label="Source Signals" value={performance.sourceSignalCount} description="Polymarket source-wallet signals observed inside the current paper baseline window." />
+        <PerformanceMetricCard label="Kalshi Matches" value={performance.kalshiMatchCount} description="Signals that found a sufficiently equivalent Kalshi market for mirroring." />
+        <PerformanceMetricCard label="Rejected Matches" value={performance.kalshiRejectedMatchCount} description="Signals rejected because the Kalshi translation, spread, or liquidity quality was not good enough." />
+        <PerformanceMetricCard label="Dry-Run Mirror Orders" value={performance.dryRunMirroredOrders} description="Simulated Kalshi mirror orders recorded without sending a live venue order." />
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <PerformanceMetricCard label="Total PnL" value={formatUsd(performance.totalPnlUsd)} description="Primary paper performance since the baseline window began." />
+        <PerformanceMetricCard label="Today PnL" value={formatUsd(performance.todayPnlUsd)} description="Realized paper PnL booked today in the live runtime." />
+        <PerformanceMetricCard label="Realized PnL" value={formatUsd(performance.realizedPnlUsd)} description="Closed paper gains and losses since baseline." />
+        <PerformanceMetricCard label="Unrealized PnL" value={formatUsd(performance.unrealizedPnlUsd)} description="Open paper-position mark-to-market since baseline." />
+        <PerformanceMetricCard label="Win Rate" value={formatPercent(performance.winRatePct)} description="Closed-trade paper win rate in the active baseline window." />
+        <PerformanceMetricCard label="Current Exposure %" value={formatPercent(performance.currentExposurePct)} description={`${formatUsd(performance.currentExposureUsd)} currently deployed across open paper copy positions.`} />
+        <PerformanceMetricCard label="Available Paper Cash %" value={formatPercent(performance.availablePaperCashPct)} description={`${formatUsd(performance.availablePaperCashUsd)} available inside ${formatUsd(performance.activeTradingCapitalUsd)} active trading capital.`} />
+        <PerformanceMetricCard label="Active Open Positions" value={performance.activeOpenPositions} description="Current open paper copy positions across both monitor cadences." />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr),minmax(0,0.95fr)]">
+        <Card className={DESK_SURFACE_CLASS}>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Equity Curve</CardTitle>
+            <CardDescription>Paper equity since the current baseline window started.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PerformanceTrendChart points={equityPoints} />
+          </CardContent>
+        </Card>
+
+        <Card className={DESK_SURFACE_CLASS}>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Daily PnL</CardTitle>
+            <CardDescription>Realized plus mark-to-market change by day inside the baseline window.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PerformanceBarList items={dailyPnlPoints} empty="No daily PnL bars yet for this baseline." />
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card className={DESK_SURFACE_CLASS}>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">PnL by Copied Wallet</CardTitle>
+            <CardDescription>Which watched wallets are actually delivering copy performance.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PerformanceBarList items={performance.pnlByWallet} empty="No copied-wallet attribution yet for this baseline." />
+          </CardContent>
+        </Card>
+
+        <Card className={DESK_SURFACE_CLASS}>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">PnL by Bot</CardTitle>
+            <CardDescription>Compare the 5m copy bot against the 15m confirmation bot.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PerformanceBarList items={performance.pnlByBot} empty="No bot attribution yet for this baseline." />
+          </CardContent>
+        </Card>
+
+        <Card className={DESK_SURFACE_CLASS}>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Top Mirrored Kalshi Markets</CardTitle>
+            <CardDescription>Dry-run mirror activity by matched Kalshi market notional.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PerformanceBarList items={performance.topKalshiMarkets} empty="No matched Kalshi markets yet for this baseline." />
+          </CardContent>
+        </Card>
+
+        <Card className={DESK_SURFACE_CLASS}>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Exposure by Wallet</CardTitle>
+            <CardDescription>Current concentration across watched-wallet copy sources.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PerformanceBarList items={performance.exposureByWallet} empty="No open exposure yet." />
+          </CardContent>
+        </Card>
+
+        <Card className={DESK_SURFACE_CLASS}>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Blocked / Skipped Reasons</CardTitle>
+            <CardDescription>Why the deterministic risk path is rejecting or pausing copy candidates.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {performance.decisionReasons.length === 0 ? (
+              <div className="rounded-[18px] border border-dashed border-border/80 bg-muted/20 p-4 text-sm text-muted-foreground">No blocked or skipped reasons yet in this baseline window.</div>
+            ) : (
+              <div className="space-y-3">
+                {performance.decisionReasons.map((item) => (
+                  <div key={item.reasonCode} className="flex items-center justify-between rounded-[18px] border border-border/80 bg-white px-4 py-3 shadow-[0_8px_22px_rgba(15,23,42,0.04)]">
+                    <span className="text-sm text-foreground">{item.reasonCode}</span>
+                    <span className="text-sm font-semibold text-foreground">{item.count}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card className={DESK_SURFACE_CLASS}>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Recent Kalshi Mirror Output</CardTitle>
+          <CardDescription>Latest source-led mirror attempts from Polymarket signals into Kalshi dry-run execution.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {data.kalshiMirrorOrders.length === 0 ? (
+            <div className="rounded-[18px] border border-dashed border-border/80 bg-muted/20 p-4 text-sm text-muted-foreground">
+              No Kalshi mirror attempts have been recorded yet for this baseline window.
+            </div>
+          ) : (
+            data.kalshiMirrorOrders.slice(0, 6).map((order) => (
+              <div key={order.id} className="rounded-[18px] border border-border/80 bg-white px-4 py-3 shadow-[0_8px_22px_rgba(15,23,42,0.04)]">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate font-medium text-foreground">{order.kalshiMarketTitle ?? order.sourceMarketTitle ?? order.sourceMarketId}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">{order.executionMode} • {order.executionStatus} • {formatDate(order.createdAt)}</div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Badge variant={order.matchStatus === "matched" ? "secondary" : "outline"}>{order.matchStatus}</Badge>
+                    <Badge variant={order.executionStatus === "dry_run_recorded" ? "secondary" : order.executionStatus === "execution_failed" ? "destructive" : "outline"}>{order.executionStatus}</Badge>
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-4 text-xs text-muted-foreground">
+                  <span>Signal source: {order.cadence}</span>
+                  <span>Contracts: {order.contractCount ?? "n/a"}</span>
+                  <span>Notional: {order.notionalUsd == null ? "n/a" : formatUsd(order.notionalUsd)}</span>
+                  <span>Confidence: {order.matchConfidence == null ? "n/a" : `${Math.round(order.matchConfidence * 100)}%`}</span>
+                </div>
+                {order.rejectionReason && (
+                  <div className="mt-2 text-xs leading-5 text-[#8d3c34]">{order.rejectionReason}</div>
+                )}
+              </div>
+            ))
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className={DESK_SURFACE_CLASS}>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">High-Level Insights</CardTitle>
+          <CardDescription>The fastest read on what is working, where risk is concentrated, and whether automation is alive.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3 xl:grid-cols-2">
+          <div className={`${INSET_SURFACE_CLASS} p-4 text-sm`}>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-4"><span>Best wallet</span><span className="font-medium">{performance.insights.bestWallet ? `${performance.insights.bestWallet.label} (${formatUsd(performance.insights.bestWallet.valueUsd)})` : "n/a"}</span></div>
+              <div className="flex items-center justify-between gap-4"><span>Worst wallet</span><span className="font-medium">{performance.insights.worstWallet ? `${performance.insights.worstWallet.label} (${formatUsd(performance.insights.worstWallet.valueUsd)})` : "n/a"}</span></div>
+              <div className="flex items-center justify-between gap-4"><span>Best trade</span><span className="font-medium">{performance.insights.bestTrade ? `${performance.insights.bestTrade.label} (${formatUsd(performance.insights.bestTrade.pnlUsd)})` : "n/a"}</span></div>
+              <div className="flex items-center justify-between gap-4"><span>Worst trade</span><span className="font-medium">{performance.insights.worstTrade ? `${performance.insights.worstTrade.label} (${formatUsd(performance.insights.worstTrade.pnlUsd)})` : "n/a"}</span></div>
+              <div className="flex items-center justify-between gap-4"><span>Average hold time</span><span className="font-medium">{formatDurationMinutes(performance.insights.averageHoldMinutes)}</span></div>
+              <div className="flex items-center justify-between gap-4"><span>Bot leader</span><span className="font-medium">{performance.insights.botLeader}</span></div>
+            </div>
+          </div>
+
+          <div className={`${INSET_SURFACE_CLASS} p-4 text-sm`}>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-4"><span>Wallet selector schedule</span><span className="font-medium">{performance.automation.walletSelectorSchedule}</span></div>
+              <div className="flex items-center justify-between gap-4"><span>Latest wallet selection</span><span className="font-medium">{formatDate(performance.automation.latestSuccessfulWalletSelectionRun)}</span></div>
+              <div className="flex items-center justify-between gap-4"><span>Latest 5m success</span><span className="font-medium">{formatDate(performance.automation.latestSuccessful5mRun)}</span></div>
+              <div className="flex items-center justify-between gap-4"><span>Latest 15m success</span><span className="font-medium">{formatDate(performance.automation.latestSuccessful15mRun)}</span></div>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              {performance.insights.concentrationWarnings.length === 0 ? (
+                <div className="rounded-[16px] border border-border/80 bg-white px-4 py-3 text-muted-foreground">No concentration warnings are active right now.</div>
+              ) : (
+                performance.insights.concentrationWarnings.map((warning) => (
+                  <div key={warning} className="rounded-[16px] border border-[#f2d2cd] bg-[#fff6f5] px-4 py-3 text-[#8d3c34]">
+                    {warning}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 function SectionTable({
   empty,
   headers,
@@ -372,7 +963,7 @@ function AuthReadinessPanel(props: {
   onCheckReadiness: () => void;
   onDeriveCredentials: () => void;
   onRefreshStatus: () => void;
-  onBindSecret: (key: PolymarketAuthEnvKey, secretId: string | null) => void;
+  onBindSecret: (key: PolymarketCopySecretEnvKey, secretId: string | null) => void;
   isStoringPrivateKey: boolean;
   isCheckingReadiness: boolean;
   isDerivingCredentials: boolean;
@@ -530,11 +1121,15 @@ function AuthReadinessPanel(props: {
             <CardHeader className="pb-3">
               <CardTitle className="text-base">Secret References</CardTitle>
               <CardDescription>
-                Review or bind company secret refs here. Private-key entry above stores through the same company secrets system.
+                Review or bind both Polymarket source creds and Kalshi venue creds through the existing company secret-ref flow. Nothing sensitive is displayed here.
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3">
-              {AUTH_KEY_ORDER.map((key) => {
+            <CardContent className="space-y-4">
+              <div className={`${INSET_SURFACE_CLASS} p-3 text-sm text-muted-foreground`}>
+                <div className="font-medium text-foreground">Polymarket source bindings</div>
+                <div className="mt-1 leading-6">These refs support optional source-side readiness checks and derived Polymarket credentials. Paper copying still stays safe.</div>
+              </div>
+              {POLYMARKET_AUTH_KEY_ORDER.map((key) => {
                 const status = readiness.keyStatuses[key];
                 const currentSecretId = boundSecretId(props.data.runtimeConfig.authEnv, key);
                 const hasCurrentSecretOption = currentSecretId != null
@@ -543,7 +1138,7 @@ function AuthReadinessPanel(props: {
                   <div key={key} className="rounded-[18px] border border-border/80 bg-white p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
-                        <div className="font-medium">{AUTH_KEY_LABELS[key]}</div>
+                        <div className="font-medium">{SECRET_KEY_LABELS[key]}</div>
                         <div className="text-xs text-muted-foreground">{key}</div>
                       </div>
                       <div className="flex flex-wrap gap-2">
@@ -583,6 +1178,60 @@ function AuthReadinessPanel(props: {
                   </div>
                 );
               })}
+
+              <div className={`${INSET_SURFACE_CLASS} p-3 text-sm text-muted-foreground`}>
+                <div className="font-medium text-foreground">Kalshi venue bindings</div>
+                <div className="mt-1 leading-6">Bind <code>KALSHI_API_KEY_ID</code> and <code>KALSHI_PRIVATE_KEY</code> here through the same company secret system. The dry-run adapter never prints raw key material.</div>
+              </div>
+              {KALSHI_SECRET_KEY_ORDER.map((key) => {
+                const status = props.data.kalshiReadiness.keyStatuses[key];
+                const currentSecretId = boundSecretId(props.data.runtimeConfig.authEnv, key);
+                const hasCurrentSecretOption = currentSecretId != null
+                  && props.availableSecrets.some((secret) => secret.id === currentSecretId);
+                return (
+                  <div key={key} className="rounded-[18px] border border-border/80 bg-white p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="font-medium">{SECRET_KEY_LABELS[key]}</div>
+                        <div className="text-xs text-muted-foreground">{key}</div>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Badge variant={status.present ? "secondary" : "outline"}>
+                          Present: {status.present ? "yes" : "no"}
+                        </Badge>
+                        <Badge variant={status.valid ? "secondary" : status.present ? "destructive" : "outline"}>
+                          {status.valid ? "valid" : status.reasonCode ?? "missing"}
+                        </Badge>
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <Select
+                        value={currentSecretId ?? EMPTY_SECRET_REF}
+                        onValueChange={(value) => props.onBindSecret(key, value === EMPTY_SECRET_REF ? null : value)}
+                        disabled={props.isUpdatingSecretRef || props.isSecretsLoading || props.secretsErrorMessage != null}
+                      >
+                        <SelectTrigger className="w-full border-border/80 bg-white sm:w-[320px]">
+                          <SelectValue placeholder="Select a secret ref" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={EMPTY_SECRET_REF}>No secret ref</SelectItem>
+                          {currentSecretId && !hasCurrentSecretOption && (
+                            <SelectItem value={currentSecretId}>Current bound ref</SelectItem>
+                          )}
+                          {props.availableSecrets.map((secret) => (
+                            <SelectItem key={secret.id} value={secret.id}>
+                              {secretOptionLabel(secret)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <div className="text-xs leading-5 text-muted-foreground">
+                        {status.reasonCode ?? "Kalshi secret ref is structurally ready for venue checks."}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </CardContent>
           </Card>
         </div>
@@ -592,7 +1241,7 @@ function AuthReadinessPanel(props: {
 }
 
 export function PolymarketCopy() {
-  const { companyPrefix } = useParams<{ companyPrefix?: string }>();
+  const { companyPrefix, polymarketPage } = useParams<{ companyPrefix?: string; polymarketPage?: string }>();
   const { selectedCompany, loading: companiesLoading } = useCompany();
   const { matchedCompany, hasUnknownCompanyPrefix } = useRouteCompanySync(companyPrefix);
   const queryClient = useQueryClient();
@@ -602,48 +1251,93 @@ export function PolymarketCopy() {
   const companyLabel = activeCompany?.name ?? "Paperclip Company";
   const companyPrefixLabel = activeCompany?.issuePrefix ?? companyPrefix ?? "desk";
   const [privateKeyDraft, setPrivateKeyDraft] = useState("");
-  const [activeSection, setActiveSection] = useState<DeskSectionId>("overview");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const closeMobileNav = () => setMobileNavOpen(false);
+  const mobileNavScrollTopRef = useRef(0);
+  const activeSection = polymarketPage
+    ? DESK_SECTIONS.find((section) => section.page === polymarketPage) ?? null
+    : DESK_SECTIONS[0];
 
   useEffect(() => {
     document.title = activeCompany
-      ? `Polymarket Trading Desk · ${activeCompany.name} · Paperclip`
-      : "Polymarket Trading Desk · Paperclip";
+      ? `${activeCompany.name} – Polymarket Copy Desk · Paperclip`
+      : "Polymarket Copy Desk · Paperclip";
   }, [activeCompany]);
 
   useEffect(() => {
-    const syncActiveSection = () => {
-      let nextSection: DeskSectionId = DESK_SECTIONS[0].id;
-      let hasMountedSections = false;
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousBodyPosition = document.body.style.position;
+    const previousBodyTop = document.body.style.top;
+    const previousBodyLeft = document.body.style.left;
+    const previousBodyRight = document.body.style.right;
+    const previousBodyWidth = document.body.style.width;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
 
-      for (const section of DESK_SECTIONS) {
-        const element = document.getElementById(section.id);
-        if (!element) continue;
-        hasMountedSections = true;
-        if (element.getBoundingClientRect().top <= 180) {
-          nextSection = section.id;
-        }
-      }
+    if (mobileNavOpen) {
+      mobileNavScrollTopRef.current = window.scrollY;
+      document.body.style.overflow = "hidden";
+      document.body.style.position = "fixed";
+      document.body.style.top = `-${mobileNavScrollTopRef.current}px`;
+      document.body.style.left = "0";
+      document.body.style.right = "0";
+      document.body.style.width = "100%";
+      document.documentElement.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "auto";
+      document.body.style.position = "";
+      document.body.style.top = "";
+      document.body.style.left = "";
+      document.body.style.right = "";
+      document.body.style.width = "";
+      document.documentElement.style.overflow = "auto";
+    }
 
-      if (!hasMountedSections) {
-        const hash = window.location.hash.replace(/^#/, "");
-        if (DESK_SECTIONS.some((section) => section.id === hash)) {
-          nextSection = hash as DeskSectionId;
-        }
-      }
-
-      setActiveSection((current) => (current === nextSection ? current : nextSection));
-    };
-
-    syncActiveSection();
-    window.addEventListener("scroll", syncActiveSection, { passive: true });
-    window.addEventListener("resize", syncActiveSection);
-    window.addEventListener("hashchange", syncActiveSection);
     return () => {
-      window.removeEventListener("scroll", syncActiveSection);
-      window.removeEventListener("resize", syncActiveSection);
-      window.removeEventListener("hashchange", syncActiveSection);
+      const lockedScrollTop = mobileNavScrollTopRef.current;
+      document.body.style.overflow = previousBodyOverflow;
+      document.body.style.position = previousBodyPosition;
+      document.body.style.top = previousBodyTop;
+      document.body.style.left = previousBodyLeft;
+      document.body.style.right = previousBodyRight;
+      document.body.style.width = previousBodyWidth;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+
+      if (mobileNavOpen) {
+        window.scrollTo(0, lockedScrollTop);
+      }
     };
-  }, [activeCompanyId]);
+  }, [mobileNavOpen]);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMobileNavOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [mobileNavOpen]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth >= 768) {
+        setMobileNavOpen(false);
+      }
+    };
+
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+    };
+  }, []);
+
 
   const dashboardQuery = useQuery({
     queryKey: activeCompanyId ? queryKeys.polymarketCopy.dashboard(activeCompanyId) : ["polymarket-copy", "dashboard", "none"],
@@ -732,7 +1426,7 @@ export function PolymarketCopy() {
     },
   });
   const updateAuthRefMutation = useMutation({
-    mutationFn: ({ key, secretId }: { key: PolymarketAuthEnvKey; secretId: string | null }) => {
+    mutationFn: ({ key, secretId }: { key: PolymarketCopySecretEnvKey; secretId: string | null }) => {
       const authEnv = buildNextAuthEnv(dashboardQuery.data?.runtimeConfig.authEnv, key, secretId);
       return polymarketCopyApi.updateRuntimeConfig(activeCompanyId!, { authEnv });
     },
@@ -769,8 +1463,12 @@ export function PolymarketCopy() {
     return <NotFoundPage scope="board" />;
   }
 
+  if (!activeSection) {
+    return <NotFoundPage scope="board" />;
+  }
+
   if (!activeCompanyId) {
-    return <EmptyState icon={Wallet} message="Select a company to open the Polymarket trading desk." />;
+    return <EmptyState icon={Wallet} message="Select a company to open the Polymarket copy desk." />;
   }
 
   if (dashboardQuery.isLoading) {
@@ -778,7 +1476,7 @@ export function PolymarketCopy() {
   }
 
   if (!data) {
-    return <EmptyState icon={Wallet} message="No Polymarket desk data is available yet." />;
+    return <EmptyState icon={Wallet} message="No Polymarket copy desk data is available yet." />;
   }
 
   const health5m = data.overview.workerHealth["polymarket-monitor-5m"] ?? "idle";
@@ -791,174 +1489,227 @@ export function PolymarketCopy() {
   const managedServices = data.underlyingModel.runtimeServices;
   const provisionedServiceCount = managedServices.filter((service) => service.exists).length;
   const serviceByKey = new Map(managedServices.map((service) => [service.key, service] as const));
+  const walletSelectorService = serviceByKey.get("wallet_selector") ?? null;
   const monitor5mService = serviceByKey.get("monitor_5m") ?? null;
   const monitor15mService = serviceByKey.get("monitor_15m") ?? null;
   const riskGovernorService = serviceByKey.get("risk_governor") ?? null;
   const executionEngineService = serviceByKey.get("execution_engine") ?? null;
+  const automation = data.performance.automation;
   const paperExecutorLabel = data.runtimeConfig.mode === "paper"
-    ? `active at ${formatUsd(data.runtimeConfig.paperTradeUsdPerSignal)} per signal`
+    ? `dynamic ${data.runtimeConfig.minTradeSizePct.toFixed(1)}%-${data.runtimeConfig.maxTradeSizePct.toFixed(1)}% of current paper bankroll`
     : "inactive";
   const liveExecutorLabel = "dormant / blocked";
 
   return (
-    <div className="min-h-screen bg-[#f6f7f9] text-foreground" style={LIGHT_DESK_THEME}>
-      <div className="relative">
+    <div className="min-h-screen bg-[#f6f2ea] text-foreground" style={LIGHT_DESK_THEME}>
+      <div
+        className="pointer-events-none fixed inset-x-0 top-0 h-72"
+        style={{
+          backgroundImage:
+            "radial-gradient(circle at 8% 0%, rgba(233, 243, 255, 0.95) 0%, transparent 38%), radial-gradient(circle at 95% 20%, rgba(255, 232, 207, 0.65) 0%, transparent 36%), linear-gradient(160deg, rgba(254, 252, 248, 0.95) 0%, rgba(244, 239, 230, 0.9) 100%)",
+        }}
+      />
+
+      {mobileNavOpen && (
+        <div className="fixed inset-0 z-[70] md:hidden">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/40"
+            onClick={closeMobileNav}
+            aria-label="Close navigation"
+          />
+
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-label="Polymarket desk navigation"
+            className="absolute inset-y-0 left-0 z-10 flex w-[258px] max-w-[calc(100vw-1rem)] flex-col border-r border-[#d4dbe4] bg-[linear-gradient(180deg,rgba(255,255,255,0.98)_0%,rgba(241,247,252,0.98)_100%)] p-3 shadow-[0_18px_34px_rgba(35,42,52,0.24)]"
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-[#d6dfe8] pb-3">
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Polymarket Copy Desk</p>
+                <p className="mt-1 truncate text-sm font-semibold text-foreground">{companyLabel}</p>
+              </div>
+              <button
+                type="button"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[#c8d5e2] bg-white text-[#31546c]"
+                onClick={closeMobileNav}
+                aria-label="Close menu"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-3 min-h-0 flex-1 overflow-y-auto pr-0.5">
+              <SectionMenu
+                activeSection={activeSection.id}
+                companyPrefix={companyPrefix}
+                onSelect={() => {
+                  closeMobileNav();
+                }}
+              />
+
+              <div className={`${INSET_SURFACE_CLASS} mt-4 p-3`}>
+                <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Desk Snapshot</div>
+                <div className="mt-3 space-y-2.5 text-sm text-foreground/90">
+                  <div className="flex items-center justify-between gap-3">
+                    <span>Mode</span>
+                    <Badge variant={data.runtimeConfig.mode === "paper" ? "secondary" : "destructive"}>{data.runtimeConfig.mode}</Badge>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span>5m Monitor</span>
+                    <Badge variant={toneForHealth(health5m)}>{health5m}</Badge>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span>15m Monitor</span>
+                    <Badge variant={toneForHealth(health15m)}>{health15m}</Badge>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span>Paper executor</span>
+                    <Badge variant="secondary">active</Badge>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span>Live executor</span>
+                    <Badge variant="destructive">blocked</Badge>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      )}
+
+      <div className="relative mx-auto max-w-[1560px] px-3 py-3 sm:px-5 lg:px-6">
         <div
-          className="pointer-events-none absolute inset-x-0 top-0 h-72"
-          style={{
-            backgroundImage:
-              "radial-gradient(circle at top left, rgba(15, 23, 42, 0.07), transparent 34%), radial-gradient(circle at top right, rgba(148, 163, 184, 0.16), transparent 28%)",
-          }}
-        />
-
-        <header className="sticky top-0 z-40 border-b border-border/80 bg-background/92 backdrop-blur-xl">
-          <div className="mx-auto max-w-[1560px] px-4 py-4 sm:px-6 lg:px-8">
-            <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-              <div className="space-y-3">
-                <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
-                  <span>Polymarket Trading Desk</span>
-                  <span className="rounded-full border border-border/80 bg-white px-2.5 py-1 text-foreground">
-                    {companyPrefixLabel}
+          aria-hidden={mobileNavOpen ? true : undefined}
+          className={`grid items-start gap-4 md:gap-6 ${mobileNavOpen ? "pointer-events-none select-none md:pointer-events-auto md:select-auto" : ""} ${sidebarCollapsed ? "md:grid-cols-[92px_minmax(0,1fr)]" : "md:grid-cols-[258px_minmax(0,1fr)]"}`}
+        >
+          <aside className="hidden md:self-start md:sticky md:top-3 md:block">
+            <div
+              className={`flex h-[calc(100vh-1.5rem)] flex-col overflow-hidden rounded-2xl border border-[#d4dbe4] bg-[linear-gradient(180deg,rgba(255,255,255,0.94)_0%,rgba(241,247,252,0.94)_100%)] p-3 shadow-[0_18px_36px_rgba(35,42,52,0.08)] ${sidebarCollapsed ? "px-2.5" : ""}`}
+            >
+              <div className="flex items-center justify-between gap-2 border-b border-[#d6dfe8] pb-3">
+                <div className={`min-w-0 ${sidebarCollapsed ? "hidden" : ""}`}>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Polymarket Copy Desk</p>
+                  <p className="mt-1 truncate text-sm font-semibold text-foreground">{companyLabel}</p>
+                </div>
+                {sidebarCollapsed && (
+                  <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[#cfd8e2] bg-[#f2f7fc] text-[11px] font-bold text-[#20445d]">
+                    {companyPrefixLabel.slice(0, 2).toUpperCase()}
                   </span>
-                  <span className="h-1 w-1 rounded-full bg-foreground/25" />
-                  <span>Standalone operator surface</span>
-                </div>
-                <div>
-                  <h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-[2rem]">
-                    {companyLabel}
-                  </h1>
-                  <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
-                    Two active monitors drive one shared deterministic pipeline. Paper execution is active, live execution stays dormant and blocked, and the desk keeps all current auth-readiness and operator controls intact.
-                  </p>
-                </div>
+                )}
+                <button
+                  type="button"
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[#c8d5e2] bg-white text-[#38556d]"
+                  onClick={() => setSidebarCollapsed((current) => !current)}
+                  aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+                  title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+                >
+                  {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+                </button>
               </div>
 
-              <div className="flex flex-wrap gap-2 xl:max-w-[34rem] xl:justify-end">
-                <Button variant="outline" size="sm" className="border-border/80 bg-white" asChild>
-                  <Link to="/dashboard">
-                    Open Control Plane
-                    <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
-                  </Link>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="border-border/80 bg-white"
-                  onClick={() => walletSelectorMutation.mutate()}
-                  disabled={walletSelectorMutation.isPending}
-                >
-                  <RefreshCcw className="mr-1.5 h-3.5 w-3.5" />
-                  Run Wallet Selection
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="border-border/80 bg-white"
-                  onClick={() => monitor5mMutation.mutate()}
-                  disabled={monitor5mMutation.isPending}
-                >
-                  <TimerReset className="mr-1.5 h-3.5 w-3.5" />
-                  Run 5m Monitor
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="border-border/80 bg-white"
-                  onClick={() => monitor15mMutation.mutate()}
-                  disabled={monitor15mMutation.isPending}
-                >
-                  <TimerReset className="mr-1.5 h-3.5 w-3.5" />
-                  Run 15m Monitor
-                </Button>
+              <div className="mt-3 min-h-0 flex-1 overflow-y-auto pr-0.5">
+                <SectionMenu
+                  activeSection={activeSection.id}
+                  companyPrefix={companyPrefix}
+                  collapsed={sidebarCollapsed}
+                />
+
               </div>
             </div>
+          </aside>
 
-            <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-7">
-              <HeaderStatusCard
-                label="Company"
-                value={<span className="inline-flex min-w-0 items-center truncate">{companyPrefixLabel}</span>}
-              />
-              <HeaderStatusCard
-                label="Owner"
-                value={<span className="block truncate">{directOwnerLabel}</span>}
-              />
-              <HeaderStatusCard
-                label="Mode"
-                value={<Badge variant={data.runtimeConfig.mode === "paper" ? "secondary" : "destructive"}>{data.runtimeConfig.mode}</Badge>}
-              />
-              <HeaderStatusCard
-                label="Live Enabled"
-                value={<Badge variant={toneForBoolean(data.runtimeConfig.liveEnabled, "destructive")}>{String(data.runtimeConfig.liveEnabled)}</Badge>}
-              />
-              <HeaderStatusCard
-                label="Kill Switch"
-                value={<Badge variant={data.runtimeConfig.tradingKillSwitch ? "destructive" : "secondary"}>{data.runtimeConfig.tradingKillSwitch ? "on" : "off"}</Badge>}
-              />
-              <HeaderStatusCard
-                label="5m Monitor"
-                value={<Badge variant={toneForHealth(health5m)}>{health5m}</Badge>}
-              />
-              <HeaderStatusCard
-                label="15m Monitor"
-                value={<Badge variant={toneForHealth(health15m)}>{health15m}</Badge>}
-              />
-            </div>
-          </div>
-        </header>
+          <div className="min-w-0">
+            <header className="sticky top-3 z-30 rounded-2xl border border-[#d8e2eb] bg-white/92 px-4 py-4 shadow-[0_14px_30px_rgba(22,35,50,0.12)] backdrop-blur-sm sm:px-5">
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                  <div className="flex items-start gap-3">
+                    <button
+                      type="button"
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#c8d5e2] bg-white text-[#31546c] md:hidden"
+                      onClick={() => setMobileNavOpen(true)}
+                      aria-label="Open navigation"
+                    >
+                      <Menu className="h-4 w-4" />
+                    </button>
+                    <div className="space-y-1">
+                      <h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-[2rem]">
+                        {companyLabel} – Polymarket Copy Desk
+                      </h1>
+                    </div>
+                  </div>
 
-        <div className="relative z-10 mx-auto max-w-[1560px] px-4 py-6 sm:px-6 lg:px-8">
-          <div className="grid items-start gap-6 lg:grid-cols-[248px,minmax(0,1fr)] lg:gap-8">
-            <aside className="hidden lg:block">
-              <div className="sticky top-28 max-h-[calc(100vh-8rem)] overflow-y-auto rounded-[28px] border border-border/80 bg-white/96 p-4 shadow-[0_18px_40px_rgba(15,23,42,0.05)]">
-                <div className="space-y-1 border-b border-border/70 pb-4">
-                  <div className="text-sm font-semibold text-foreground">Desk Navigation</div>
-                  <div className="text-xs leading-5 text-muted-foreground">
-                    Natural page scroll with a compact operator rail for quick jumps.
+                  <div className="flex flex-wrap gap-2 xl:max-w-[34rem] xl:justify-end">
+                    <Button variant="outline" size="sm" className="border-[#c6d2df] bg-white text-[#33414e]" asChild>
+                      <Link to="/dashboard">
+                        Open Control Plane
+                        <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
+                      </Link>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="border-[#c6d2df] bg-white text-[#33414e]"
+                      onClick={() => walletSelectorMutation.mutate()}
+                      disabled={walletSelectorMutation.isPending}
+                    >
+                      <RefreshCcw className="mr-1.5 h-3.5 w-3.5" />
+                      Run Wallet Selection
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="border-[#c6d2df] bg-white text-[#33414e]"
+                      onClick={() => monitor5mMutation.mutate()}
+                      disabled={monitor5mMutation.isPending}
+                    >
+                      <TimerReset className="mr-1.5 h-3.5 w-3.5" />
+                      Run 5m Monitor
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="border-[#c6d2df] bg-white text-[#33414e]"
+                      onClick={() => monitor15mMutation.mutate()}
+                      disabled={monitor15mMutation.isPending}
+                    >
+                      <TimerReset className="mr-1.5 h-3.5 w-3.5" />
+                      Run 15m Monitor
+                    </Button>
                   </div>
                 </div>
 
-                <div className="mt-4">
-                  <SectionMenu activeSection={activeSection} onSelect={setActiveSection} />
-                </div>
-
-                <div className={`${INSET_SURFACE_CLASS} mt-4 p-4`}>
-                  <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                    System Shape
-                  </div>
-                  <div className="mt-3 space-y-3 text-sm text-foreground/90">
-                    <div className="flex items-center justify-between gap-3">
-                      <span>Primary workers</span>
-                      <Badge variant={monitor5mService?.exists && monitor15mService?.exists ? "secondary" : "outline"}>
-                        {(monitor5mService?.exists ? 1 : 0) + (monitor15mService?.exists ? 1 : 0)}/2 real
-                      </Badge>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span>Shared pipeline</span>
-                      <Badge variant={provisionedServiceCount === managedServices.length ? "secondary" : "outline"}>
-                        {provisionedServiceCount}/{managedServices.length} services
-                      </Badge>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span>Paper executor</span>
-                      <Badge variant="secondary">active</Badge>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span>Live executor</span>
-                      <Badge variant="destructive">blocked</Badge>
-                    </div>
-                  </div>
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+                  <HeaderStatusCard
+                    label="Mode"
+                    value={<Badge variant={data.runtimeConfig.mode === "paper" ? "secondary" : "destructive"}>{data.runtimeConfig.mode}</Badge>}
+                  />
+                  <HeaderStatusCard
+                    label="Live Enabled"
+                    value={<Badge variant={toneForBoolean(data.runtimeConfig.liveEnabled, "destructive")}>{String(data.runtimeConfig.liveEnabled)}</Badge>}
+                  />
+                  <HeaderStatusCard
+                    label="Kill Switch"
+                    value={<Badge variant={data.runtimeConfig.tradingKillSwitch ? "destructive" : "secondary"}>{data.runtimeConfig.tradingKillSwitch ? "on" : "off"}</Badge>}
+                  />
+                  <HeaderStatusCard
+                    label="5m Monitor"
+                    value={<Badge variant={toneForHealth(health5m)}>{health5m}</Badge>}
+                  />
+                  <HeaderStatusCard
+                    label="15m Monitor"
+                    value={<Badge variant={toneForHealth(health15m)}>{health15m}</Badge>}
+                  />
                 </div>
               </div>
-            </aside>
+            </header>
 
-            <main className="min-w-0 space-y-8">
+            <main className="min-w-0 space-y-8 pb-12 pt-6">
               {dashboardQuery.error && <p className="text-sm text-destructive">{dashboardQuery.error.message}</p>}
 
-              <div className="lg:hidden">
-                <SectionMenu activeSection={activeSection} compact onSelect={setActiveSection} />
-              </div>
-
               <DeskSection
+                active={activeSection.id === "overview"}
                 id="overview"
                 title="Overview"
                 description="A cleaner operator shell centered on the two live paper-monitor cadences and their shared execution pipeline."
@@ -1067,7 +1818,7 @@ export function PolymarketCopy() {
                     <CardHeader className="border-b border-border/70 pb-4">
                       <CardTitle className="text-base">Desk Model</CardTitle>
                       <CardDescription>
-                        One company-scoped trading system with optional analyst support. No execution zoo.
+                        One company-scoped copy-trading system with optional analyst support. No execution zoo.
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4 p-6 text-sm">
@@ -1106,6 +1857,16 @@ export function PolymarketCopy() {
               </DeskSection>
 
               <DeskSection
+                active={activeSection.id === "performance"}
+                id="performance"
+                title="Performance"
+                description="Executive-first paper-copy performance, attribution, and automation health inside the current baseline window."
+              >
+                <PerformanceView data={data} />
+              </DeskSection>
+
+              <DeskSection
+                active={activeSection.id === "desk-status"}
                 id="desk-status"
                 title="Desk Status"
                 description="Core desk health, exposure, ownership, and runtime thresholds in a denser operator layout."
@@ -1150,23 +1911,34 @@ export function PolymarketCopy() {
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-2 text-sm">
-                      <div className="flex items-center justify-between"><span>Min wallet score</span><span className="font-medium">{data.runtimeConfig.minWalletScore.toFixed(2)}</span></div>
-                      <div className="flex items-center justify-between"><span>Min signal materiality</span><span className="font-medium">{formatUsd(data.runtimeConfig.minSignalMateriality)}</span></div>
-                      <div className="flex items-center justify-between"><span>Max spread</span><span className="font-medium">{data.runtimeConfig.maxSpreadBps} bps</span></div>
-                      <div className="flex items-center justify-between"><span>Max market exposure</span><span className="font-medium">{formatUsd(data.runtimeConfig.maxExposurePerMarket)}</span></div>
-                      <div className="flex items-center justify-between"><span>Max open paper exposure</span><span className="font-medium">{formatUsd(data.runtimeConfig.maxTotalOpenPaperExposure)}</span></div>
+                      <div className="flex items-center justify-between"><span>Trade size range</span><span className="font-medium">{data.runtimeConfig.minTradeSizePct.toFixed(1)}% - {data.runtimeConfig.maxTradeSizePct.toFixed(1)}%</span></div>
+                      <div className="flex items-center justify-between"><span>Max market exposure</span><span className="font-medium">{data.runtimeConfig.maxExposurePerMarketPct.toFixed(1)}%</span></div>
+                      <div className="flex items-center justify-between"><span>Max wallet exposure</span><span className="font-medium">{data.runtimeConfig.maxExposurePerWalletPct.toFixed(1)}%</span></div>
+                      <div className="flex items-center justify-between"><span>Max total open exposure</span><span className="font-medium">{data.runtimeConfig.maxTotalOpenExposurePct.toFixed(1)}%</span></div>
+                      <div className="flex items-center justify-between"><span>Dynamic sizing</span><span className="font-medium">{data.runtimeConfig.dynamicSizing ? data.runtimeConfig.dynamicSizingBasis : "off"}</span></div>
+                      <div className="flex items-center justify-between"><span>Position-count sizing</span><span className="font-medium">{String(data.runtimeConfig.positionCountBasedSizing)}</span></div>
                     </CardContent>
                   </Card>
                 </div>
               </DeskSection>
 
               <DeskSection
+                active={activeSection.id === "workers"}
                 id="workers"
                 title="Workers"
                 description="The only active workers are the 5m and 15m monitors. Everything else is shared deterministic support logic behind the same execution path."
               >
-                <div className="grid gap-4 xl:grid-cols-3">
+                <div className="grid gap-4 xl:grid-cols-4">
                   {[
+                    {
+                      workerKey: "wallet-selector-daily",
+                      label: "Wallet Selector",
+                      cadence: automation.walletSelectorSchedule,
+                      health: data.overview.workerHealth["wallet-selector-daily"] ?? "idle",
+                      exists: walletSelectorService?.exists,
+                      lastSuccess: automation.latestSuccessfulWalletSelectionRun,
+                      autoRun: automation.walletSelectorAutoRunActive,
+                    },
                     {
                       workerKey: "polymarket-monitor-5m",
                       label: "5m Monitor",
@@ -1174,6 +1946,7 @@ export function PolymarketCopy() {
                       health: health5m,
                       exists: monitor5mService?.exists,
                       lastSuccess: data.overview.lastSuccessful5mRun,
+                      autoRun: automation.monitor5mAutoRunActive,
                     },
                     {
                       workerKey: "polymarket-monitor-15m",
@@ -1182,6 +1955,7 @@ export function PolymarketCopy() {
                       health: health15m,
                       exists: monitor15mService?.exists,
                       lastSuccess: data.overview.lastSuccessful15mRun,
+                      autoRun: automation.monitor15mAutoRunActive,
                     },
                   ].map((worker) => {
                     const run = latestWorkerRuns.get(worker.workerKey);
@@ -1196,6 +1970,7 @@ export function PolymarketCopy() {
                         </CardHeader>
                         <CardContent className="space-y-2 text-sm">
                           <div className="flex items-center justify-between"><span>Runtime registration</span><Badge variant={worker.exists ? "secondary" : "outline"}>{worker.exists ? "real" : "missing"}</Badge></div>
+                          <div className="flex items-center justify-between"><span>Auto-run</span><Badge variant={worker.autoRun ? "secondary" : "outline"}>{worker.autoRun ? "active" : "off"}</Badge></div>
                           <div className="flex items-center justify-between"><span>Last successful run</span><span className="font-medium">{formatDate(worker.lastSuccess)}</span></div>
                           <div className="flex items-center justify-between"><span>Latest status</span><span className="font-medium">{run?.status ?? "idle"}</span></div>
                           <div className="flex items-center justify-between"><span>Signals in latest run</span><span className="font-medium">{run?.signalCount ?? 0}</span></div>
@@ -1239,33 +2014,71 @@ export function PolymarketCopy() {
               </DeskSection>
 
               <DeskSection
+                active={activeSection.id === "wallets"}
                 id="wallets"
                 title="Wallets"
-                description="Active watched wallets, bench candidates, and composite score breakdowns."
+                description="Copy Rank is driven by win rate first, then resolved-trade proof, recent resolved activity, and last activity."
               >
+                <div className={`${INSET_SURFACE_CLASS} space-y-3 p-4 text-sm`}>
+                  <div className="font-medium text-foreground">The watched set targets {data.runtimeConfig.targetWatchedWalletCount} active wallets and keeps copy quality anchored to win rate plus real longevity and recent activity proof.</div>
+                  <div className="leading-6 text-muted-foreground">Active copy sources still prefer 70%+ win rate with at least 30 resolved trades and 12 resolved trades in the last 30 days. The desk can still backfill with 65%+ wallets when the pool is thin, caps sports-heavy copy sources at 8, and aims to keep at least 6 non-sports wallets active whenever the eligible pool supports it.</div>
+                  <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                    <Badge variant="outline">Active target {data.runtimeConfig.targetWatchedWalletCount}</Badge>
+                    <Badge variant="outline">Sports-heavy cap 8</Badge>
+                    <Badge variant="outline">Min non-sports 6</Badge>
+                    <Badge variant="outline">Max daily replacements {data.runtimeConfig.maxDailyReplacements}</Badge>
+                  </div>
+                </div>
                 <SectionTable
                   empty="No watched wallets yet."
-                  headers={["Wallet", "Status", "Score", "Component Scores", "Last Refreshed"]}
-                  rows={data.watchedWallets.map((wallet) => [
-                    <div key="wallet" className="space-y-1">
-                      <div className="font-mono text-xs">{wallet.walletAddress}</div>
-                      <div className="text-xs text-muted-foreground">{wallet.label || "Unlabeled"}</div>
-                    </div>,
-                    <Badge key="status" variant={wallet.status === "active" ? "secondary" : wallet.status === "bench" ? "outline" : "destructive"}>
-                      {wallet.status}
-                    </Badge>,
-                    <span key="score" className="font-medium">{wallet.score.toFixed(3)}</span>,
-                    <div key="components" className="space-y-1 text-xs leading-5 text-muted-foreground">
-                      <div>eff {wallet.componentScores.efficiency.toFixed(2)} • con {wallet.componentScores.consistency.toFixed(2)}</div>
-                      <div>div {wallet.componentScores.diversification.toFixed(2)} • rec {wallet.componentScores.recency.toFixed(2)}</div>
-                      <div>pen {wallet.componentScores.concentrationPenalty.toFixed(2)}</div>
-                    </div>,
-                    formatDate(wallet.lastRefreshedAt),
-                  ])}
+                  headers={["Copy Rank", "Wallet", "Status", "Win Rate", "Resolved Trades", "Recent Resolved (30d)", "Category", "Last Activity", "Selection Notes"]}
+                  rows={data.watchedWallets.map((wallet) => {
+                    const snapshot = walletSelectionSnapshot(wallet.metadata);
+                    const lastActivity = snapshot.lastActivityAt ?? wallet.lastRefreshedAt;
+                    return [
+                      <span key="rank" className="font-medium">{wallet.currentRank == null ? "—" : `#${wallet.currentRank}`}</span>,
+                      <div key="wallet" className="space-y-1">
+                        <div className="font-mono text-xs">{wallet.walletAddress}</div>
+                        <div className="text-xs text-muted-foreground">{wallet.label || "Unlabeled"}</div>
+                      </div>,
+                      <Badge key="status" variant={walletStatusVariant(wallet)}>
+                        {walletStatusLabel(wallet)}
+                      </Badge>,
+                      <span key="win-rate" className="font-semibold">{formatPercent(snapshot.winRate)}</span>,
+                      <div key="resolved" className="space-y-1">
+                        <div className="font-medium">{snapshot.resolvedTrades ?? "—"}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {snapshot.resolvedTradesLikelyTruncated && snapshot.closedPositionsFetchCeiling != null
+                            ? `fetch ceiling hit at ${snapshot.closedPositionsFetchCeiling}+`
+                            : "30+ required for active"}
+                        </div>
+                      </div>,
+                      <div key="recent-resolved" className="space-y-1">
+                        <div className="font-medium">{snapshot.recentResolvedTrades30d ?? "—"}</div>
+                        <div className="text-xs text-muted-foreground">{snapshot.hasRecentActivity ? "active in last 30d" : "stale recent activity"}</div>
+                      </div>,
+                      <div key="category" className="space-y-1">
+                        <div className="font-medium">{formatWalletCategory(snapshot.dominantCategory)}</div>
+                        <div className="text-xs text-muted-foreground">{snapshot.recentCategoryMixLabel ?? "recent mix unavailable"}</div>
+                        <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                          {snapshot.sportsHeavy ? "Sports-heavy" : snapshot.diversified ? "Diversified" : "Concentrated"}
+                        </div>
+                      </div>,
+                      <div key="last-activity" className="space-y-1">
+                        <div>{formatDate(lastActivity)}</div>
+                        <div className="text-xs text-muted-foreground">{snapshot.hasRecentActivity ? "recent activity confirmed" : "fails recent-activity gate"}</div>
+                      </div>,
+                      <div key="note" className="space-y-1 text-xs leading-5 text-muted-foreground">
+                        <div>{walletSelectionNote(wallet)}</div>
+                        <div className="text-[11px] uppercase tracking-[0.14em]">Secondary score {wallet.score.toFixed(3)}</div>
+                      </div>,
+                    ];
+                  })}
                 />
               </DeskSection>
 
               <DeskSection
+                active={activeSection.id === "signals"}
                 id="signals"
                 title="Signals"
                 description="Structured wallet activity events normalized from the dual-cadence monitoring pass."
@@ -1289,6 +2102,7 @@ export function PolymarketCopy() {
               </DeskSection>
 
               <DeskSection
+                active={activeSection.id === "paper-trades"}
                 id="paper-trades"
                 title="Paper Trades"
                 description="Simulated copy-trade lifecycle with explicit assumptions and no live order placement."
@@ -1313,6 +2127,7 @@ export function PolymarketCopy() {
               </DeskSection>
 
               <DeskSection
+                active={activeSection.id === "risk-blocks"}
                 id="risk-blocks"
                 title="Risk / Blocks"
                 description="Blocked signals, threshold failures, kill-switch state, and current exposure posture."
@@ -1352,6 +2167,7 @@ export function PolymarketCopy() {
               </DeskSection>
 
               <DeskSection
+                active={activeSection.id === "auth-readiness"}
                 id="auth-readiness"
                 title="Auth Readiness"
                 description="Optional secret refs and operator-safe credential readiness, with no impact on paper-mode startup."
@@ -1380,11 +2196,12 @@ export function PolymarketCopy() {
               </DeskSection>
 
               <DeskSection
+                active={activeSection.id === "live-readiness"}
                 id="live-readiness"
                 title="Live Readiness"
                 description="Governance state for future live activation. V0 remains paper-only and still never places orders."
               >
-                <div className="grid gap-4 xl:grid-cols-[1.15fr,1fr]">
+                <div className="grid gap-4 xl:grid-cols-3">
                   <Card className={DESK_SURFACE_CLASS}>
                     <CardHeader>
                       <CardTitle className="flex items-center gap-2 text-base">
@@ -1392,10 +2209,10 @@ export function PolymarketCopy() {
                         Live Gate Stack
                       </CardTitle>
                       <CardDescription>
-                        Live dispatch stays impossible by default and unresolved until a future executor exists.
+                        Real Kalshi order placement stays blocked until mode, enablement, and safety gates are explicitly opened later.
                       </CardDescription>
                     </CardHeader>
-                    <CardContent className="grid gap-3 sm:grid-cols-2">
+                    <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
                       <div className="rounded-[18px] border border-border/80 bg-muted/25 p-3">
                         <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Mode</div>
                         <div className="mt-2 text-lg font-semibold text-foreground">{data.runtimeConfig.mode}</div>
@@ -1409,7 +2226,7 @@ export function PolymarketCopy() {
                         <div className="mt-2 text-lg font-semibold text-foreground">{data.runtimeConfig.tradingKillSwitch ? "on" : "off"}</div>
                       </div>
                       <div className="rounded-[18px] border border-border/80 bg-muted/25 p-3">
-                        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Authenticated readiness</div>
+                        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Polymarket auth readiness</div>
                         <div className="mt-2 text-lg font-semibold text-foreground">{readiness.authenticatedLiveReadiness}</div>
                       </div>
                     </CardContent>
@@ -1417,22 +2234,88 @@ export function PolymarketCopy() {
 
                   <Card className={DESK_SURFACE_CLASS}>
                     <CardHeader>
-                      <CardTitle className="text-base">Current Runtime Outcome</CardTitle>
+                      <CardTitle className="text-base">Kalshi Venue Readiness</CardTitle>
+                      <CardDescription>
+                        Uses the same Paperclip secret-ref system for <code>KALSHI_API_KEY_ID</code> and <code>KALSHI_PRIVATE_KEY</code>.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3 text-sm">
+                      <div className="flex flex-wrap gap-2">
+                        <Badge variant={data.kalshiReadiness.authConfigured ? "secondary" : "outline"}>Auth configured: {data.kalshiReadiness.authConfigured ? "yes" : "no"}</Badge>
+                        <Badge variant={data.kalshiReadiness.marketDataReachable ? "secondary" : "outline"}>Market data: {data.kalshiReadiness.marketDataReachable ? "reachable" : "down"}</Badge>
+                        <Badge variant={data.kalshiReadiness.balancesReachable ? "secondary" : "outline"}>Balances: {data.kalshiReadiness.balancesReachable ? "reachable" : "not ready"}</Badge>
+                        <Badge variant={data.kalshiReadiness.positionsReachable ? "secondary" : "outline"}>Positions: {data.kalshiReadiness.positionsReachable ? "reachable" : "not ready"}</Badge>
+                      </div>
+                      <div className={`${INSET_SURFACE_CLASS} p-3 text-muted-foreground`}>
+                        {data.kalshiReadiness.summary}
+                      </div>
+                      <div className="flex items-center justify-between gap-4"><span>Execution mode</span><span className="font-medium">{data.kalshiReadiness.executionMode}</span></div>
+                      <div className="flex items-center justify-between gap-4"><span>Signal source active</span><span className="font-medium">{String(data.kalshiReadiness.signalSourceActive)}</span></div>
+                      <div className="flex items-center justify-between gap-4"><span>Match quality available</span><span className="font-medium">{String(data.kalshiReadiness.marketMatchQualityAvailable)}</span></div>
+                      <div className="flex items-center justify-between gap-4"><span>Last readiness check</span><span className="font-medium">{formatDate(data.kalshiReadiness.checkedAt)}</span></div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className={DESK_SURFACE_CLASS}>
+                    <CardHeader>
+                      <CardTitle className="text-base">Mirror Path Status</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-3 text-sm">
                       <div className={`${INSET_SURFACE_CLASS} p-3 text-muted-foreground`}>
-                        Even with valid credentials present, the desk remains paper-first. A future live phase still needs explicit operator controls plus a real execution implementation.
+                        Real Polymarket wallet signals now feed a Kalshi dry-run execution adapter. Live Kalshi order placement still remains disabled by default.
                       </div>
-                      <div className="flex items-center justify-between gap-4"><span>Validation mode</span><span className="font-medium">{readiness.validationMode}</span></div>
-                      <div className="flex items-center justify-between gap-4"><span>Last validation</span><span className="font-medium">{formatDate(readiness.lastValidation.checkedAt)}</span></div>
-                      <div className="flex items-center justify-between gap-4"><span>Last derivation attempt</span><span className="font-medium">{formatDate(readiness.lastDerivation.attemptedAt)}</span></div>
-                      <div className="flex items-center justify-between gap-4"><span>Live executor</span><span className="font-medium">Not implemented</span></div>
+                      <div className="flex items-center justify-between gap-4"><span>Dry-run mirror orders</span><span className="font-medium">{data.performance.dryRunMirroredOrders}</span></div>
+                      <div className="flex items-center justify-between gap-4"><span>Matched Kalshi markets</span><span className="font-medium">{data.performance.kalshiMatchCount}</span></div>
+                      <div className="flex items-center justify-between gap-4"><span>Rejected translations</span><span className="font-medium">{data.performance.kalshiRejectedMatchCount}</span></div>
+                      <div className="flex items-center justify-between gap-4"><span>Recent source signals</span><span className="font-medium">{data.performance.sourceSignalCount}</span></div>
+                      <div className="flex items-center justify-between gap-4"><span>Live executor</span><span className="font-medium">disabled by default</span></div>
                     </CardContent>
                   </Card>
                 </div>
+
+                <Card className={DESK_SURFACE_CLASS}>
+                  <CardHeader>
+                    <CardTitle className="text-base">Recent Mirror Attempts</CardTitle>
+                    <CardDescription>
+                      Latest Polymarket-to-Kalshi mirror results, including rejected translations and dry-run order payloads.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {data.kalshiMirrorOrders.length === 0 ? (
+                      <div className="rounded-[18px] border border-dashed border-border/80 bg-muted/20 p-4 text-sm text-muted-foreground">
+                        No Kalshi mirror attempts have been recorded yet.
+                      </div>
+                    ) : (
+                      data.kalshiMirrorOrders.slice(0, 8).map((order) => (
+                        <div key={order.id} className="rounded-[18px] border border-border/80 bg-white px-4 py-3 text-sm shadow-[0_8px_22px_rgba(15,23,42,0.04)]">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="truncate font-medium text-foreground">{order.kalshiMarketTitle ?? order.sourceMarketTitle ?? order.sourceMarketId}</div>
+                              <div className="mt-1 text-xs text-muted-foreground">{order.executionMode} • {order.executionStatus} • {formatDate(order.createdAt)}</div>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <Badge variant={order.matchStatus === "matched" ? "secondary" : "outline"}>{order.matchStatus}</Badge>
+                              <Badge variant={order.executionStatus === "dry_run_recorded" ? "secondary" : order.executionStatus === "execution_failed" ? "destructive" : "outline"}>{order.executionStatus}</Badge>
+                            </div>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-4 text-xs text-muted-foreground">
+                            <span>Cadence: {order.cadence}</span>
+                            <span>Contracts: {order.contractCount ?? "n/a"}</span>
+                            <span>Limit: {order.limitPriceDollars == null ? "n/a" : `$${order.limitPriceDollars.toFixed(3)}`}</span>
+                            <span>Notional: {order.notionalUsd == null ? "n/a" : formatUsd(order.notionalUsd)}</span>
+                          </div>
+                          {order.rejectionReason && (
+                            <div className="mt-2 text-xs leading-5 text-[#8d3c34]">{order.rejectionReason}</div>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </CardContent>
+                </Card>
               </DeskSection>
 
               <DeskSection
+                active={activeSection.id === "audit"}
                 id="audit"
                 title="Audit"
                 description="Runtime-safe activity log for wallet refreshes, monitor runs, signal decisions, config changes, and auth checks."

@@ -1,8 +1,9 @@
 import type {
   PolymarketCopyPaperTrade,
+  PolymarketCopyRuntimeConfig,
   PolymarketCopySignal,
 } from "@paperclipai/shared";
-import { signalMetadata } from "./shared.js";
+import { planNewTradeSizing, resolveSignalPricing } from "./runtime-math.js";
 
 export interface PaperSimulatorResult {
   trade: Omit<PolymarketCopyPaperTrade, "id" | "companyId" | "createdAt" | "updatedAt">;
@@ -26,32 +27,44 @@ function computeUnrealized(quantity: number, entryPrice: number | null, markPric
 }
 
 export function applySignalToPaperTrade(options: {
+  config: Pick<
+    PolymarketCopyRuntimeConfig,
+    | "paperStartingBankrollUsd"
+    | "activeTradingCapitalMode"
+    | "activeTradingCapitalCapUsd"
+    | "minTradeSizePct"
+    | "maxTradeSizePct"
+    | "maxTotalOpenExposurePct"
+    | "dynamicSizing"
+    | "dynamicSizingBasis"
+  >;
   signal: PolymarketCopySignal;
   existingTrade: PolymarketCopyPaperTrade | null;
+  openTrades: PolymarketCopyPaperTrade[];
+  totalRealizedPnlUsd: number;
   sourceWalletAddress: string;
-  paperTradeUsdPerSignal: number;
   now: Date;
 }): PaperSimulatorResult | null {
-  const { signal, existingTrade, sourceWalletAddress, paperTradeUsdPerSignal, now } = options;
-  const metadata = signalMetadata(signal);
-  const markPrice = toNumber(metadata.currentPrice) ?? null;
+  const { config, signal, existingTrade, openTrades, totalRealizedPnlUsd, sourceWalletAddress, now } = options;
+  const pricing = resolveSignalPricing(signal);
+  const markPrice = pricing.markPrice;
   if (markPrice == null || markPrice <= 0) return null;
-
-  const sourceNotionalUsd = Math.max(
-    1,
-    toNumber(metadata.sourceNotionalUsd) ??
-      toNumber(metadata.currentValue) ??
-      (signal.currentSize != null ? signal.currentSize * markPrice : paperTradeUsdPerSignal),
-  );
-  const sourceDelta = Math.abs(signal.sizeDelta ?? signal.currentSize ?? 0);
 
   if (!existingTrade) {
     if (signal.action === "reduced_position" || signal.action === "closed_position") {
       return null;
     }
 
-    const mirrorScale = Math.min(1, paperTradeUsdPerSignal / sourceNotionalUsd);
-    const quantity = Math.max(0, (signal.currentSize ?? sourceDelta) * mirrorScale);
+    const sizingPlan = planNewTradeSizing({
+      config,
+      signal,
+      openTrades,
+      totalRealizedPnlUsd,
+    });
+    if (!sizingPlan) return null;
+
+    const mirrorScale = Math.min(1, sizingPlan.targetNotionalUsd / pricing.sourceNotionalUsd);
+    const quantity = Math.max(0, (signal.currentSize ?? pricing.sourceDelta) * mirrorScale);
     const notionalUsd = quantity * markPrice;
     return {
       trade: {
@@ -73,11 +86,17 @@ export function applySignalToPaperTrade(options: {
           signal.sourceSnapshotTimestamp == null
             ? null
             : Math.max(0, now.getTime() - signal.sourceSnapshotTimestamp.getTime()),
-        assumptionNote: "V0 paper trade mirrors the source position using a capped notional scale derived from source size.",
+        assumptionNote: "Paper trade mirrors the source position using capped active trading capital and the shared deterministic execution engine.",
         metadata: {
           mirrorScale,
           copiedFromSignalAction: signal.action,
-          sourceNotionalUsd,
+          sourceNotionalUsd: pricing.sourceNotionalUsd,
+          targetNotionalUsd: sizingPlan.targetNotionalUsd,
+          effectiveTradeSizePct: sizingPlan.effectiveTradeSizePct,
+          currentPaperBankrollUsd: sizingPlan.currentPaperBankrollUsd,
+          currentWalletEquityUsd: sizingPlan.currentWalletEquityUsd,
+          activeTradingCapitalUsd: sizingPlan.activeTradingCapitalUsd,
+          currentExposurePct: sizingPlan.currentExposurePct,
         },
         openedAt: now,
         closedAt: null,
@@ -91,15 +110,20 @@ export function applySignalToPaperTrade(options: {
         unrealizedPnlUsd: 0,
         assumptions: {
           mirrorScale,
-          sourceNotionalUsd,
-          paperTradeUsdPerSignal,
+          sourceNotionalUsd: pricing.sourceNotionalUsd,
+          targetNotionalUsd: sizingPlan.targetNotionalUsd,
+          effectiveTradeSizePct: sizingPlan.effectiveTradeSizePct,
+          currentPaperBankrollUsd: sizingPlan.currentPaperBankrollUsd,
+          currentWalletEquityUsd: sizingPlan.currentWalletEquityUsd,
+          activeTradingCapitalUsd: sizingPlan.activeTradingCapitalUsd,
+          currentExposurePct: sizingPlan.currentExposurePct,
         },
       },
     };
   }
 
   const mirrorScale = toNumber(existingTrade.metadata?.mirrorScale) ?? 1;
-  const quantityDelta = sourceDelta * mirrorScale;
+  const quantityDelta = pricing.sourceDelta * mirrorScale;
   const remainingQuantity =
     signal.action === "reduced_position" || signal.action === "closed_position"
       ? Math.max(0, existingTrade.quantity - (signal.action === "closed_position" ? existingTrade.quantity : quantityDelta))
@@ -162,8 +186,8 @@ export function applySignalToPaperTrade(options: {
       unrealizedPnlUsd,
       assumptions: {
         mirrorScale,
-        sourceDelta,
-        sourceNotionalUsd,
+        sourceDelta: pricing.sourceDelta,
+        sourceNotionalUsd: pricing.sourceNotionalUsd,
       },
     },
   };

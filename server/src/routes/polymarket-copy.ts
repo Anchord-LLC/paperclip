@@ -47,6 +47,14 @@ export function polymarketCopyRoutes(db: Db) {
     res.json(await service.deriveApiCredentials(companyId, getActorInfo(req), body.reason ?? "manual"));
   });
 
+  router.post("/companies/:companyId/polymarket-copy/paper-baseline/reset", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    const body = polymarketCopyDashboardActionSchema.parse(req.body ?? {});
+    res.json(await service.resetPaperBaseline(companyId, getActorInfo(req), body.reason ?? "manual"));
+  });
+
   router.post("/companies/:companyId/polymarket-copy/runs/wallet-selector", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
