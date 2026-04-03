@@ -63,7 +63,9 @@ describeDatabaseBacked("heartbeat post-run candidate generation", () => {
   });
 
   afterAll(async () => {
-    await db.delete(plugins).where(eq(plugins.pluginKey, LOCAL_MEMORY_PLUGIN_KEY));
+    if (!sharedConnectionString) {
+      await db.delete(plugins).where(eq(plugins.pluginKey, LOCAL_MEMORY_PLUGIN_KEY));
+    }
     await tempDb?.cleanup();
   });
 
@@ -154,6 +156,8 @@ describeDatabaseBacked("heartbeat post-run candidate generation", () => {
     expect(generated.skippedReason).toBeNull();
     expect(generated.attempted).toBe(1);
     expect(generated.created).toHaveLength(1);
+    expect(generated.merged).toHaveLength(0);
+    expect(generated.suppressed).toHaveLength(0);
     expect(generated.created[0]?.status).toBe("candidate");
     expect(generated.created[0]?.roleFamily).toBe("qa");
     expect(generated.created[0]?.proposedByActorType).toBe("agent");
@@ -269,6 +273,8 @@ describeDatabaseBacked("heartbeat post-run candidate generation", () => {
     expect(generated.skippedReason).toBeNull();
     expect(generated.attempted).toBe(2);
     expect(generated.created).toHaveLength(2);
+    expect(generated.merged).toHaveLength(0);
+    expect(generated.suppressed).toHaveLength(0);
     expect(generated.created.every((snippet) => snippet.status === "candidate")).toBe(true);
     expect(generated.created.every((snippet) => snippet.roleFamily === "researcher")).toBe(true);
 
@@ -302,5 +308,107 @@ describeDatabaseBacked("heartbeat post-run candidate generation", () => {
     expect(candidateQuery.snippets).toHaveLength(2);
     expect(candidateQuery.snippets.every((snippet) => snippet.status === "candidate")).toBe(true);
     expect(candidateQuery.snippets.some((snippet) => snippet.text.includes("Overflow Candidate"))).toBe(false);
+  });
+
+  it("dedupes repeated QA candidates and merges repeat evidence into the existing proposal", async () => {
+    const { companyId, agentId, bindingId } = await seedRunFixture("qa", {});
+    const firstRunId = randomUUID();
+    const secondRunId = randomUUID();
+
+    const first = await generateHeartbeatRunCandidateSkills(db, {
+      companyId,
+      agentId,
+      agentRole: "qa",
+      runId: firstRunId,
+      issueId: "issue-qa-repeat-1",
+      resultJson: {
+        paperclipCandidateSkills: [
+          {
+            title: "Defect Evidence Format",
+            content: "Capture expected behavior, observed behavior, reproduction, and impact in that order.",
+            metadata: {
+              skillKey: "paperclipai/paperclip/paperclip-qa-defect-summary",
+            },
+          },
+        ],
+      },
+    });
+
+    const second = await generateHeartbeatRunCandidateSkills(db, {
+      companyId,
+      agentId,
+      agentRole: "qa",
+      runId: secondRunId,
+      issueId: "issue-qa-repeat-2",
+      resultJson: {
+        paperclipCandidateSkills: [
+          {
+            title: "Defect Evidence Format",
+            content: "capture expected behavior observed behavior reproduction and impact in that order",
+            metadata: {
+              skillKey: "paperclipai/paperclip/paperclip-qa-defect-summary",
+              evidenceRef: "run-note-repeat",
+            },
+          },
+        ],
+      },
+    });
+
+    expect(first.created).toHaveLength(1);
+    expect(first.merged).toHaveLength(0);
+    expect(second.created).toHaveLength(0);
+    expect(second.merged).toHaveLength(1);
+    expect(second.suppressed).toHaveLength(0);
+    expect(second.merged[0]?.stateKey).toBe(first.created[0]?.stateKey);
+
+    const candidateQuery = await memorySvc.querySkills({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      roleFamily: "qa",
+      query: "",
+      limit: 5,
+      includeCandidate: true,
+      actorType: "agent",
+      actorId: agentId,
+    });
+
+    expect(candidateQuery.snippets).toHaveLength(1);
+    expect(candidateQuery.snippets[0]?.stateKey).toBe(first.created[0]?.stateKey);
+    expect(candidateQuery.snippets[0]?.metadata).toMatchObject({
+      proposalSourceKind: "heartbeat_run_result",
+      proposalFingerprint: expect.any(String),
+      proposalOccurrenceCount: 2,
+      proposalProvenanceCount: 2,
+      proposalRunId: secondRunId,
+      proposalIssueId: "issue-qa-repeat-2",
+      proposalRunIds: [firstRunId, secondRunId],
+      skillKey: "paperclipai/paperclip/paperclip-qa-defect-summary",
+      evidenceRef: "run-note-repeat",
+    });
+    expect(candidateQuery.snippets[0]?.metadata?.proposalProvenanceHistory).toEqual([
+      expect.objectContaining({
+        runId: firstRunId,
+        issueId: "issue-qa-repeat-1",
+        agentId,
+        agentRole: "qa",
+      }),
+      expect.objectContaining({
+        runId: secondRunId,
+        issueId: "issue-qa-repeat-2",
+        agentId,
+        agentRole: "qa",
+      }),
+    ]);
+
+    const operations = await memorySvc.listRecentOperations({
+      companyId,
+      bindingId,
+      limit: 20,
+    });
+
+    expect(operations.filter((operation) => operation.operationType === "propose_skill")).toHaveLength(2);
+    expect(operations.every((operation) => operation.status === "success")).toBe(true);
   });
 });

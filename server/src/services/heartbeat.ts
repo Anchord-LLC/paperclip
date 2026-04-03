@@ -2707,17 +2707,31 @@ export function heartbeatService(db: Db) {
               resultJson: finalizedRun.resultJson,
             });
 
-            if (candidateGeneration.created.length > 0) {
+            const affectedCandidates = [
+              ...candidateGeneration.created,
+              ...candidateGeneration.merged,
+            ];
+
+            if (affectedCandidates.length > 0) {
+              const createdCount = candidateGeneration.created.length;
+              const mergedCount = candidateGeneration.merged.length;
+              const messageParts = [
+                createdCount > 0
+                  ? `generated ${createdCount} new candidate skill proposal${createdCount === 1 ? "" : "s"}`
+                  : null,
+                mergedCount > 0
+                  ? `merged ${mergedCount} repeat candidate${mergedCount === 1 ? "" : "s"}`
+                  : null,
+              ].filter((part): part is string => part !== null);
+
               await appendRunEvent(finalizedRun, seq++, {
                 eventType: "memory.candidate",
                 stream: "system",
                 level: "info",
-                message:
-                  `generated ${candidateGeneration.created.length} candidate skill proposal`
-                  + (candidateGeneration.created.length === 1 ? "" : "s"),
+                message: messageParts.join("; "),
                 payload: {
                   roleFamily: agent.role,
-                  stateKeys: candidateGeneration.created.map((snippet) => snippet.stateKey),
+                  stateKeys: affectedCandidates.map((snippet) => snippet.stateKey),
                 },
               });
             }

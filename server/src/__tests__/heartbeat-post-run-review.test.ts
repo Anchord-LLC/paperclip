@@ -73,7 +73,9 @@ describeDatabaseBacked("heartbeat post-run candidate review handoff", () => {
   });
 
   afterAll(async () => {
-    await db.delete(plugins).where(eq(plugins.pluginKey, LOCAL_MEMORY_PLUGIN_KEY));
+    if (!sharedConnectionString) {
+      await db.delete(plugins).where(eq(plugins.pluginKey, LOCAL_MEMORY_PLUGIN_KEY));
+    }
     await tempDb?.cleanup();
   });
 
@@ -197,6 +199,8 @@ describeDatabaseBacked("heartbeat post-run candidate review handoff", () => {
       title: "QA Acceptance Review",
       skillKey: reviewSkill.key,
     });
+    expect(listed.items[0]?.reviewPriority.repeatCount).toBe(1);
+    expect(listed.items[0]?.reviewPriority.provenanceCount).toBe(1);
 
     const approved = await reviewSvc.approveCandidateSkill({
       companyId,
@@ -236,6 +240,28 @@ describeDatabaseBacked("heartbeat post-run candidate review handoff", () => {
     });
     const promoted = afterEntries.filter((entry) => entry.requiredReason?.includes("Approved qa skill retrieved"));
     expect(promoted.map((entry) => entry.key)).toEqual([reviewSkill.key]);
+
+    const repeatedApproved = await generateHeartbeatRunCandidateSkills(db, {
+      companyId,
+      agentId,
+      agentRole: "qa",
+      runId: randomUUID(),
+      issueId: "issue-qa-43",
+      resultJson: {
+        paperclipCandidateSkills: [
+          {
+            title: "QA Acceptance Review",
+            content: reviewSkill.description ?? reviewSkill.name,
+            metadata: {
+              skillKey: reviewSkill.key,
+            },
+          },
+        ],
+      },
+    });
+    expect(repeatedApproved.created).toHaveLength(0);
+    expect(repeatedApproved.merged).toHaveLength(0);
+    expect(repeatedApproved.suppressed).toHaveLength(1);
 
     const operations = await memorySvc.listRecentOperations({
       companyId,
@@ -298,6 +324,8 @@ describeDatabaseBacked("heartbeat post-run candidate review handoff", () => {
       agentRole: "researcher",
       skillKey: evidenceSkill.key,
     });
+    expect(listed.items[0]?.reviewPriority.repeatCount).toBe(1);
+    expect(listed.items[0]?.reviewPriority.provenanceCount).toBe(1);
 
     const dismissed = await reviewSvc.dismissCandidateSkill({
       companyId,
@@ -346,6 +374,30 @@ describeDatabaseBacked("heartbeat post-run candidate review handoff", () => {
     });
     expect(runtimeEntries.find((entry) => entry.key === evidenceSkill.key)?.required).toBe(false);
 
+    const repeatedArchived = await generateHeartbeatRunCandidateSkills(db, {
+      companyId,
+      agentId,
+      agentRole: "researcher",
+      runId: randomUUID(),
+      issueId: "issue-res-8",
+      resultJson: {
+        paperclip: {
+          candidateSkills: [
+            {
+              title: "Research Evidence Synthesis",
+              content: evidenceSkill.description ?? evidenceSkill.name,
+              metadata: {
+                skillKey: evidenceSkill.key,
+              },
+            },
+          ],
+        },
+      },
+    });
+    expect(repeatedArchived.created).toHaveLength(0);
+    expect(repeatedArchived.merged).toHaveLength(0);
+    expect(repeatedArchived.suppressed).toHaveLength(1);
+
     const operations = await memorySvc.listRecentOperations({
       companyId,
       bindingId,
@@ -354,5 +406,98 @@ describeDatabaseBacked("heartbeat post-run candidate review handoff", () => {
     expect(operations.filter((entry) => entry.operationType === "archive_skill")).toHaveLength(1);
     expect(operations.some((entry) => entry.operationType === "query_skills")).toBe(true);
     expect(operations.every((entry) => entry.status === "success")).toBe(true);
+  });
+
+  it("prioritizes repeated QA candidates higher in review listings", async () => {
+    const seeded = await seedRunFixture("qa", {});
+    const repeatSkill = await requireBundledSkill(seeded.companyId, "paperclip-qa-defect-summary");
+    const singleSkill = await requireBundledSkill(seeded.companyId, "paperclip-qa-acceptance-criteria-review");
+
+    const repeatedFirstRunId = randomUUID();
+    const repeatedSecondRunId = randomUUID();
+
+    const firstRepeated = await generateHeartbeatRunCandidateSkills(db, {
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      agentRole: "qa",
+      runId: repeatedFirstRunId,
+      issueId: "issue-qa-priority-1",
+      resultJson: {
+        paperclipCandidateSkills: [
+          {
+            title: "QA Defect Summary",
+            content: repeatSkill.description ?? repeatSkill.name,
+            metadata: {
+              skillKey: repeatSkill.key,
+            },
+          },
+        ],
+      },
+    });
+
+    const secondRepeated = await generateHeartbeatRunCandidateSkills(db, {
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      agentRole: "qa",
+      runId: repeatedSecondRunId,
+      issueId: "issue-qa-priority-2",
+      resultJson: {
+        paperclipCandidateSkills: [
+          {
+            title: "QA Defect Summary",
+            content: (repeatSkill.description ?? repeatSkill.name).toUpperCase(),
+            metadata: {
+              skillKey: repeatSkill.key,
+              evidenceRef: "repeat-2",
+            },
+          },
+        ],
+      },
+    });
+
+    const singleRunId = randomUUID();
+    const single = await generateHeartbeatRunCandidateSkills(db, {
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      agentRole: "qa",
+      runId: singleRunId,
+      issueId: "issue-qa-priority-3",
+      resultJson: {
+        paperclipCandidateSkills: [
+          {
+            title: "QA Acceptance Review",
+            content: singleSkill.description ?? singleSkill.name,
+            metadata: {
+              skillKey: singleSkill.key,
+            },
+          },
+        ],
+      },
+    });
+
+    expect(firstRepeated.created).toHaveLength(1);
+    expect(secondRepeated.merged).toHaveLength(1);
+    expect(single.created).toHaveLength(1);
+
+    const listed = await reviewSvc.listCandidateSkillsForReview({
+      companyId: seeded.companyId,
+      roleFamily: "qa",
+      actorType: "user",
+      actorId: "reviewer-qa-priority",
+      limit: 5,
+    });
+
+    expect(listed.items).toHaveLength(2);
+    expect(listed.items[0]?.snippet.stateKey).toBe(firstRepeated.created[0]?.stateKey);
+    expect(listed.items[0]?.reviewPriority.repeatCount).toBe(2);
+    expect(listed.items[0]?.reviewPriority.provenanceCount).toBe(2);
+    expect(listed.items[0]?.provenance.runId).toBe(repeatedSecondRunId);
+    expect(listed.items[0]?.provenance.skillKey).toBe(repeatSkill.key);
+
+    expect(listed.items[1]?.snippet.stateKey).toBe(single.created[0]?.stateKey);
+    expect(listed.items[1]?.reviewPriority.repeatCount).toBe(1);
+    expect(listed.items[1]?.reviewPriority.provenanceCount).toBe(1);
+    expect(listed.items[1]?.provenance.runId).toBe(singleRunId);
+    expect(listed.items[1]?.provenance.skillKey).toBe(singleSkill.key);
   });
 });

@@ -58,7 +58,9 @@ describeDatabaseBacked("memoryService", () => {
   });
 
   afterAll(async () => {
-    await db.delete(plugins).where(eq(plugins.pluginKey, LOCAL_MEMORY_PLUGIN_KEY));
+    if (!sharedConnectionString) {
+      await db.delete(plugins).where(eq(plugins.pluginKey, LOCAL_MEMORY_PLUGIN_KEY));
+    }
     await tempDb?.cleanup();
   });
 

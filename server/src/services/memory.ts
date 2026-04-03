@@ -1244,9 +1244,25 @@ export function memoryService(db: Db) {
           metadata: input.metadata ?? {},
         },
         action: async () => {
+          const existing = await readSkillRecord(binding, {
+            companyId: input.companyId,
+            bindingKey: input.bindingKey,
+            scopeKind: input.scopeKind,
+            scopeId,
+            namespace,
+            stateKey: input.stateKey,
+            roleFamily: input.roleFamily,
+            actorType: input.actorType,
+            actorId: input.actorId,
+          });
+          const preservedCandidate = existing?.status === "candidate" ? existing : null;
+
           const snippet = await writeSkillRecord(binding, {
             ...input,
             status: "candidate",
+            proposedByActorType: preservedCandidate?.proposedByActorType ?? input.actorType,
+            proposedByActorId: preservedCandidate?.proposedByActorId ?? input.actorId ?? null,
+            proposedAt: preservedCandidate?.proposedAt ?? undefined,
           });
           return {
             result: snippet,

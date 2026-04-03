@@ -29,9 +29,17 @@ export interface PostRunSkillCandidateProvenance {
   skillKey: string | null;
 }
 
+export interface PostRunSkillCandidateReviewPriority {
+  repeatCount: number;
+  provenanceCount: number;
+  latestSeenAt: Date;
+  firstSeenAt: Date;
+}
+
 export interface PostRunSkillCandidateReviewItem {
   snippet: SkillSnippet;
   provenance: PostRunSkillCandidateProvenance;
+  reviewPriority: PostRunSkillCandidateReviewPriority;
 }
 
 export interface ListPostRunCandidateSkillsForReviewInput {
@@ -80,8 +88,22 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function asPositiveInteger(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const normalized = Math.trunc(value);
+  return normalized > 0 ? normalized : null;
+}
+
 function isAgentRole(value: unknown): value is AgentRole {
   return typeof value === "string" && AGENT_ROLES.includes(value as AgentRole);
+}
+
+function toDateOrFallback(value: unknown, fallback: Date): Date {
+  if (typeof value === "string") {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return fallback;
 }
 
 function normalizeBindingKey(bindingKey?: string): string {
@@ -120,6 +142,14 @@ function buildPostRunCandidateReviewItem(snippet: SkillSnippet): PostRunSkillCan
       baseStateKey: asString(metadata.proposalBaseStateKey),
       title: asString(metadata.proposalTitle),
       skillKey: asString(metadata.skillKey),
+    },
+    reviewPriority: {
+      repeatCount: asPositiveInteger(metadata.proposalOccurrenceCount) ?? 1,
+      provenanceCount: asPositiveInteger(metadata.proposalProvenanceCount)
+        ?? asPositiveInteger(metadata.proposalOccurrenceCount)
+        ?? 1,
+      latestSeenAt: toDateOrFallback(metadata.proposalLastSeenAt, snippet.updatedAt),
+      firstSeenAt: toDateOrFallback(metadata.proposalFirstSeenAt, snippet.proposedAt),
     },
   };
 }
@@ -201,6 +231,15 @@ export function postRunSkillReviewService(db: Db) {
           .filter((snippet) => snippet.status === "candidate")
           .map(buildPostRunCandidateReviewItem)
           .filter((item): item is PostRunSkillCandidateReviewItem => item !== null)
+          .sort((left, right) => {
+            const repeatDelta = right.reviewPriority.repeatCount - left.reviewPriority.repeatCount;
+            if (repeatDelta !== 0) return repeatDelta;
+
+            const provenanceDelta = right.reviewPriority.provenanceCount - left.reviewPriority.provenanceCount;
+            if (provenanceDelta !== 0) return provenanceDelta;
+
+            return right.reviewPriority.latestSeenAt.getTime() - left.reviewPriority.latestSeenAt.getTime();
+          })
           .slice(0, clampReviewLimit(input.limit)),
         skippedReason: null,
       };
