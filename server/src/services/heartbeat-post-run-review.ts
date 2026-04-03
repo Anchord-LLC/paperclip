@@ -264,6 +264,7 @@ export function postRunSkillReviewService(db: Db) {
       return buildPostRunCandidateReviewItem(snippet) ?? {
         snippet,
         provenance: candidate.provenance,
+        reviewPriority: candidate.reviewPriority,
       };
     },
 
@@ -283,6 +284,7 @@ export function postRunSkillReviewService(db: Db) {
       return buildPostRunCandidateReviewItem(snippet) ?? {
         snippet,
         provenance: candidate.provenance,
+        reviewPriority: candidate.reviewPriority,
       };
     },
   };
