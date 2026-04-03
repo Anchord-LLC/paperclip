@@ -13,6 +13,10 @@ export type OperationalMemoryKind =
 export type OperationalMemoryStatus = "candidate" | "approved" | "archived";
 export type SkillMemoryKind = "specialist_skill";
 export type SkillMemoryStatus = "candidate" | "approved" | "archived";
+export type SkillValidationSourceKind =
+  | "human_review"
+  | "peer_agent_review"
+  | "test_evidence";
 
 export interface MemoryProviderCapabilities {
   write?: boolean;
@@ -138,6 +142,13 @@ export interface SkillSnippet {
   namespace: string;
   score?: number;
   metadata?: Record<string, unknown>;
+  proposedByActorType: MemoryActorType | null;
+  proposedByActorId: string | null;
+  validatedByActorType: MemoryActorType | null;
+  validatedByActorId: string | null;
+  validationSourceKind: SkillValidationSourceKind | null;
+  validationSourceRef: string | null;
+  validationNotes: string | null;
   proposedAt: Date;
   approvedAt: Date | null;
   archivedAt: Date | null;
@@ -208,6 +219,12 @@ export interface SkillStatusChangeRequest {
   roleFamily: AgentRole;
   actorType: MemoryActorType;
   actorId?: string | null;
+}
+
+export interface SkillApproveRequest extends SkillStatusChangeRequest {
+  validationSourceKind?: SkillValidationSourceKind | null;
+  validationSourceRef?: string | null;
+  validationNotes?: string | null;
 }
 
 export interface MemoryReadRequest {

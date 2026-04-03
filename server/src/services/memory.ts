@@ -7,6 +7,7 @@ import type {
   CreateMemoryBindingInput,
   ListMemoryOperationsInput,
   LogMemoryOperationInput,
+  MemoryActorType,
   MemoryBinding,
   MemoryOperation,
   MemoryProposeRequest,
@@ -23,11 +24,13 @@ import type {
   ResolveMemoryBindingInput,
   SkillMemoryKind,
   SkillMemoryStatus,
+  SkillApproveRequest,
   SkillProposeRequest,
   SkillQueryRequest,
   SkillQueryResult,
   SkillSnippet,
   SkillStatusChangeRequest,
+  SkillValidationSourceKind,
   UpdateMemoryBindingStatusInput,
 } from "@paperclipai/shared";
 import { pluginStateStore } from "./plugin-state-store.js";
@@ -73,6 +76,12 @@ const SKILL_MEMORY_STATUSES = new Set<SkillMemoryStatus>([
   "archived",
 ]);
 
+const SKILL_VALIDATION_SOURCE_KINDS = new Set<SkillValidationSourceKind>([
+  "human_review",
+  "peer_agent_review",
+  "test_evidence",
+]);
+
 type LocalMemoryValue = {
   text: string;
   metadata: Record<string, unknown>;
@@ -90,6 +99,13 @@ type LocalSkillValue = {
   kind: SkillMemoryKind;
   status: SkillMemoryStatus;
   roleFamily: AgentRole;
+  proposedByActorType: MemoryActorType | null;
+  proposedByActorId: string | null;
+  validatedByActorType: MemoryActorType | null;
+  validatedByActorId: string | null;
+  validationSourceKind: SkillValidationSourceKind | null;
+  validationSourceRef: string | null;
+  validationNotes: string | null;
   proposedAt: string;
   approvedAt: string | null;
   archivedAt: string | null;
@@ -119,6 +135,13 @@ type ProviderQueryResult = MemoryQueryResult & {
 
 type SkillWriteInput = SkillProposeRequest & {
   status?: SkillMemoryStatus;
+  proposedByActorType?: MemoryActorType | null;
+  proposedByActorId?: string | null;
+  validatedByActorType?: MemoryActorType | null;
+  validatedByActorId?: string | null;
+  validationSourceKind?: SkillValidationSourceKind | null;
+  validationSourceRef?: string | null;
+  validationNotes?: string | null;
   proposedAt?: Date | null;
   approvedAt?: Date | null;
   archivedAt?: Date | null;
@@ -140,6 +163,10 @@ function isOperationalMemoryStatus(value: unknown): value is OperationalMemorySt
   return typeof value === "string" && OPERATIONAL_MEMORY_STATUSES.has(value as OperationalMemoryStatus);
 }
 
+function isMemoryActorType(value: unknown): value is MemoryActorType {
+  return value === "agent" || value === "user" || value === "system";
+}
+
 function isAgentRole(value: unknown): value is AgentRole {
   return typeof value === "string" && AGENT_ROLES.includes(value as AgentRole);
 }
@@ -150,6 +177,10 @@ function isSkillMemoryKind(value: unknown): value is SkillMemoryKind {
 
 function isSkillMemoryStatus(value: unknown): value is SkillMemoryStatus {
   return typeof value === "string" && SKILL_MEMORY_STATUSES.has(value as SkillMemoryStatus);
+}
+
+function isSkillValidationSourceKind(value: unknown): value is SkillValidationSourceKind {
+  return typeof value === "string" && SKILL_VALIDATION_SOURCE_KINDS.has(value as SkillValidationSourceKind);
 }
 
 function normalizeMetadata(value: unknown): Record<string, unknown> {
@@ -232,12 +263,24 @@ function buildLocalSkillValue(input: SkillWriteInput, updatedAt: Date): LocalSki
     ? coerceDate(input.archivedAt, updatedAt) ?? updatedAt
     : null;
 
+  const proposedByActorType = input.proposedByActorType ?? input.actorType;
+  const proposedByActorId = input.proposedByActorId ?? input.actorId ?? null;
+  const validatedByActorType = input.validatedByActorType ?? null;
+  const validatedByActorId = input.validatedByActorId ?? null;
+
   return {
     text: input.content,
     metadata: normalizeMetadata(input.metadata),
     kind,
     status,
     roleFamily: input.roleFamily,
+    proposedByActorType,
+    proposedByActorId,
+    validatedByActorType,
+    validatedByActorId,
+    validationSourceKind: input.validationSourceKind ?? null,
+    validationSourceRef: input.validationSourceRef ?? null,
+    validationNotes: input.validationNotes ?? null,
     proposedAt: toIsoString(proposedAt) ?? updatedAt.toISOString(),
     approvedAt: toIsoString(approvedAt),
     archivedAt: toIsoString(archivedAt),
@@ -288,6 +331,15 @@ function parseLocalSkillValue(value: unknown): LocalSkillValue | null {
   const updatedAt = typeof record.updatedAt === "string" ? record.updatedAt : new Date().toISOString();
   const kind = isSkillMemoryKind(record.kind) ? record.kind : "specialist_skill";
   const status = isSkillMemoryStatus(record.status) ? record.status : "approved";
+  const proposedByActorType = isMemoryActorType(record.proposedByActorType) ? record.proposedByActorType : null;
+  const proposedByActorId = typeof record.proposedByActorId === "string" ? record.proposedByActorId : null;
+  const validatedByActorType = isMemoryActorType(record.validatedByActorType) ? record.validatedByActorType : null;
+  const validatedByActorId = typeof record.validatedByActorId === "string" ? record.validatedByActorId : null;
+  const validationSourceKind = isSkillValidationSourceKind(record.validationSourceKind)
+    ? record.validationSourceKind
+    : null;
+  const validationSourceRef = typeof record.validationSourceRef === "string" ? record.validationSourceRef : null;
+  const validationNotes = typeof record.validationNotes === "string" ? record.validationNotes : null;
   const proposedAt = typeof record.proposedAt === "string" ? record.proposedAt : updatedAt;
   const approvedAt = typeof record.approvedAt === "string"
     ? record.approvedAt
@@ -306,6 +358,13 @@ function parseLocalSkillValue(value: unknown): LocalSkillValue | null {
     kind,
     status,
     roleFamily: record.roleFamily,
+    proposedByActorType,
+    proposedByActorId,
+    validatedByActorType,
+    validatedByActorId,
+    validationSourceKind,
+    validationSourceRef,
+    validationNotes,
     proposedAt,
     approvedAt,
     archivedAt,
@@ -359,6 +418,13 @@ function buildSkillSnippet(binding: MemoryBinding, input: {
   scopeId: string | null;
   namespace: string;
   metadata?: Record<string, unknown>;
+  proposedByActorType: MemoryActorType | null;
+  proposedByActorId: string | null;
+  validatedByActorType: MemoryActorType | null;
+  validatedByActorId: string | null;
+  validationSourceKind: SkillValidationSourceKind | null;
+  validationSourceRef: string | null;
+  validationNotes: string | null;
   proposedAt: Date;
   approvedAt: Date | null;
   archivedAt: Date | null;
@@ -379,6 +445,13 @@ function buildSkillSnippet(binding: MemoryBinding, input: {
     scopeId: input.scopeId,
     namespace: input.namespace,
     metadata: input.metadata ?? {},
+    proposedByActorType: input.proposedByActorType,
+    proposedByActorId: input.proposedByActorId,
+    validatedByActorType: input.validatedByActorType,
+    validatedByActorId: input.validatedByActorId,
+    validationSourceKind: input.validationSourceKind,
+    validationSourceRef: input.validationSourceRef,
+    validationNotes: input.validationNotes,
     proposedAt: input.proposedAt,
     approvedAt: input.approvedAt,
     archivedAt: input.archivedAt,
@@ -497,6 +570,13 @@ export function memoryService(db: Db) {
       scopeId,
       namespace,
       metadata: value.metadata,
+      proposedByActorType: value.proposedByActorType,
+      proposedByActorId: value.proposedByActorId,
+      validatedByActorType: value.validatedByActorType,
+      validatedByActorId: value.validatedByActorId,
+      validationSourceKind: value.validationSourceKind,
+      validationSourceRef: value.validationSourceRef,
+      validationNotes: value.validationNotes,
       proposedAt: new Date(value.proposedAt),
       approvedAt: value.approvedAt ? new Date(value.approvedAt) : null,
       archivedAt: value.archivedAt ? new Date(value.archivedAt) : null,
@@ -532,6 +612,13 @@ export function memoryService(db: Db) {
       scopeId,
       namespace,
       metadata: parsed.metadata,
+      proposedByActorType: parsed.proposedByActorType,
+      proposedByActorId: parsed.proposedByActorId,
+      validatedByActorType: parsed.validatedByActorType,
+      validatedByActorId: parsed.validatedByActorId,
+      validationSourceKind: parsed.validationSourceKind,
+      validationSourceRef: parsed.validationSourceRef,
+      validationNotes: parsed.validationNotes,
       proposedAt: new Date(parsed.proposedAt),
       approvedAt: parsed.approvedAt ? new Date(parsed.approvedAt) : null,
       archivedAt: parsed.archivedAt ? new Date(parsed.archivedAt) : null,
@@ -568,6 +655,13 @@ export function memoryService(db: Db) {
           scopeId: row.scopeId,
           namespace,
           metadata: parsed.metadata,
+          proposedByActorType: parsed.proposedByActorType,
+          proposedByActorId: parsed.proposedByActorId,
+          validatedByActorType: parsed.validatedByActorType,
+          validatedByActorId: parsed.validatedByActorId,
+          validationSourceKind: parsed.validationSourceKind,
+          validationSourceRef: parsed.validationSourceRef,
+          validationNotes: parsed.validationNotes,
           proposedAt: new Date(parsed.proposedAt),
           approvedAt: parsed.approvedAt ? new Date(parsed.approvedAt) : null,
           archivedAt: parsed.archivedAt ? new Date(parsed.archivedAt) : null,
@@ -1168,7 +1262,7 @@ export function memoryService(db: Db) {
       });
     },
 
-    async approveSkill(input: SkillStatusChangeRequest): Promise<SkillSnippet> {
+    async approveSkill(input: SkillApproveRequest): Promise<SkillSnippet> {
       const binding = await resolveActiveBinding(input.companyId, input.bindingKey);
       const scopeId = normalizeScopeId(binding.companyId, input.scopeKind, input.scopeId);
       const namespace = normalizeSkillNamespace(binding, input.namespace);
@@ -1189,6 +1283,9 @@ export function memoryService(db: Db) {
           namespace,
           stateKey: input.stateKey,
           roleFamily: input.roleFamily,
+          validationSourceKind: input.validationSourceKind ?? null,
+          validationSourceRef: input.validationSourceRef ?? null,
+          validationNotes: input.validationNotes ?? null,
         },
         action: async () => {
           const existing = await readExistingSkill(binding, input);
@@ -1203,6 +1300,13 @@ export function memoryService(db: Db) {
             roleFamily: existing.roleFamily,
             metadata: existing.metadata ?? {},
             status: "approved",
+            proposedByActorType: existing.proposedByActorType,
+            proposedByActorId: existing.proposedByActorId,
+            validatedByActorType: input.actorType,
+            validatedByActorId: input.actorId ?? null,
+            validationSourceKind: input.validationSourceKind ?? null,
+            validationSourceRef: input.validationSourceRef ?? null,
+            validationNotes: input.validationNotes ?? null,
             proposedAt: existing.proposedAt,
             approvedAt: existing.approvedAt ?? new Date(),
           });
@@ -1214,6 +1318,9 @@ export function memoryService(db: Db) {
               roleFamily: snippet.roleFamily,
               kind: snippet.kind,
               status: snippet.status,
+              proposedByActorType: snippet.proposedByActorType,
+              validatedByActorType: snippet.validatedByActorType,
+              validationSourceKind: snippet.validationSourceKind,
             },
           };
         },
@@ -1264,6 +1371,13 @@ export function memoryService(db: Db) {
             roleFamily: existing.roleFamily,
             metadata: existing.metadata ?? {},
             status: "archived",
+            proposedByActorType: existing.proposedByActorType,
+            proposedByActorId: existing.proposedByActorId,
+            validatedByActorType: existing.validatedByActorType,
+            validatedByActorId: existing.validatedByActorId,
+            validationSourceKind: existing.validationSourceKind,
+            validationSourceRef: existing.validationSourceRef,
+            validationNotes: existing.validationNotes,
             proposedAt: existing.proposedAt,
             approvedAt: existing.approvedAt,
             archivedAt: existing.archivedAt ?? new Date(),

@@ -452,6 +452,11 @@ describeDatabaseBacked("memoryService", () => {
     expect(proposed.status).toBe("candidate");
     expect(proposed.kind).toBe("specialist_skill");
     expect(proposed.roleFamily).toBe("engineer");
+    expect(proposed.proposedByActorType).toBe("agent");
+    expect(proposed.proposedByActorId).toBe("agent-1");
+    expect(proposed.validatedByActorType).toBeNull();
+    expect(proposed.validatedByActorId).toBeNull();
+    expect(proposed.validationSourceKind).toBeNull();
 
     const defaultEngineerQueryBeforeApproval = await svc.querySkills({
       companyId,
@@ -483,6 +488,8 @@ describeDatabaseBacked("memoryService", () => {
     expect(engineerCandidateQuery.snippets).toHaveLength(1);
     expect(engineerCandidateQuery.snippets[0]?.status).toBe("candidate");
     expect(engineerCandidateQuery.snippets[0]?.roleFamily).toBe("engineer");
+    expect(engineerCandidateQuery.snippets[0]?.proposedByActorType).toBe("agent");
+    expect(engineerCandidateQuery.snippets[0]?.validatedByActorType).toBeNull();
 
     const approved = await svc.approveSkill({
       companyId,
@@ -491,12 +498,23 @@ describeDatabaseBacked("memoryService", () => {
       scopeId: companyId,
       stateKey: "incident-triage-checklist",
       roleFamily: "engineer",
-      actorType: "agent",
-      actorId: "agent-1",
+      actorType: "user",
+      actorId: "reviewer-1",
+      validationSourceKind: "human_review",
+      validationSourceRef: "issue://PAP-314",
+      validationNotes: "Validated against the incident escalation handbook.",
     });
 
     expect(approved.status).toBe("approved");
     expect(approved.approvedAt).toBeTruthy();
+    expect(approved.proposedByActorType).toBe("agent");
+    expect(approved.proposedByActorId).toBe("agent-1");
+    expect(approved.validatedByActorType).toBe("user");
+    expect(approved.validatedByActorId).toBe("reviewer-1");
+    expect(approved.validationSourceKind).toBe("human_review");
+    expect(approved.validationSourceRef).toBe("issue://PAP-314");
+    expect(approved.validationNotes).toBe("Validated against the incident escalation handbook.");
+    expect(approved.proposedByActorId).not.toBe(approved.validatedByActorId);
 
     const defaultEngineerQueryAfterApproval = await svc.querySkills({
       companyId,
@@ -513,6 +531,9 @@ describeDatabaseBacked("memoryService", () => {
     expect(defaultEngineerQueryAfterApproval.snippets).toHaveLength(1);
     expect(defaultEngineerQueryAfterApproval.snippets[0]?.status).toBe("approved");
     expect(defaultEngineerQueryAfterApproval.snippets[0]?.roleFamily).toBe("engineer");
+    expect(defaultEngineerQueryAfterApproval.snippets[0]?.proposedByActorType).toBe("agent");
+    expect(defaultEngineerQueryAfterApproval.snippets[0]?.validatedByActorType).toBe("user");
+    expect(defaultEngineerQueryAfterApproval.snippets[0]?.validationSourceKind).toBe("human_review");
 
     const unrelatedRoleQuery = await svc.querySkills({
       companyId,
