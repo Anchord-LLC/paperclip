@@ -8,6 +8,7 @@ import { companySkills } from "@paperclipai/db";
 import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import type {
+  AgentRole,
   CompanySkill,
   CompanySkillCreateRequest,
   CompanySkillCompatibility,
@@ -25,12 +26,15 @@ import type {
   CompanySkillTrustLevel,
   CompanySkillUpdateStatus,
   CompanySkillUsageAgent,
+  MemoryActorType,
+  SkillSnippet,
 } from "@paperclipai/shared";
-import { normalizeAgentUrlKey } from "@paperclipai/shared";
+import { AGENT_ROLES, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { findServerAdapter } from "../adapters/index.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
 import { agentService } from "./agents.js";
+import { memoryService } from "./memory.js";
 import { projectService } from "./projects.js";
 import { secretService } from "./secrets.js";
 
@@ -99,7 +103,19 @@ type RuntimeSkillEntryOptions = {
   materializeMissing?: boolean;
 };
 
+type RuntimeExecutionSkillEntryOptions = RuntimeSkillEntryOptions & {
+  agentRole: string;
+  actorType?: MemoryActorType;
+  actorId?: string | null;
+  limit?: number;
+};
+
 const skillInventoryRefreshPromises = new Map<string, Promise<void>>();
+const BUNDLED_RUNTIME_SKILL_REASON = "Bundled Paperclip skills are always available for local adapters.";
+const CORE_RUNTIME_SKILL_KEY = "paperclipai/paperclip/paperclip";
+const RUNTIME_MEMORY_BRIDGE_BINDING_KEY = "default";
+const RUNTIME_MEMORY_BRIDGE_LIMIT = 2;
+const RUNTIME_MEMORY_BRIDGE_ENABLED_ROLES = new Set<AgentRole>(["qa", "researcher"]);
 
 const PROJECT_SCAN_DIRECTORY_ROOTS = [
   "skills",
@@ -148,6 +164,10 @@ function asString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function isAgentRole(value: unknown): value is AgentRole {
+  return typeof value === "string" && AGENT_ROLES.includes(value as AgentRole);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -1150,6 +1170,40 @@ function getSkillMeta(skill: CompanySkill): SkillSourceMeta {
   return isPlainRecord(skill.metadata) ? skill.metadata as SkillSourceMeta : {};
 }
 
+function readSkillRoleFamily(skill: CompanySkill): AgentRole | null {
+  const parsed = parseFrontmatterMarkdown(skill.markdown);
+  const roleFamily = asString(parsed.frontmatter.role_family) ?? asString(parsed.frontmatter.roleFamily);
+  return isAgentRole(roleFamily) ? roleFamily : null;
+}
+
+function readRuntimeSkillReferenceCandidates(snippet: SkillSnippet): string[] {
+  const metadata = isPlainRecord(snippet.metadata) ? snippet.metadata : {};
+  return Array.from(new Set([
+    asString(metadata.skillKey),
+    asString(metadata.runtimeSkillKey),
+    asString(metadata.skillSlug),
+    snippet.stateKey,
+  ].filter((value): value is string => Boolean(value))));
+}
+
+function buildRuntimeRetrievedSkillReason(agentRole: AgentRole): string {
+  return `Approved ${agentRole} skill retrieved from Paperclip Memory for runtime execution.`;
+}
+
+function stripBundledExecutionRequirement(entry: PaperclipSkillEntry): PaperclipSkillEntry {
+  if (!entry.required || entry.requiredReason !== BUNDLED_RUNTIME_SKILL_REASON) {
+    return entry;
+  }
+  if (entry.key === CORE_RUNTIME_SKILL_KEY) {
+    return entry;
+  }
+  return {
+    ...entry,
+    required: false,
+    requiredReason: null,
+  };
+}
+
 function resolveSkillReference(
   skills: CompanySkill[],
   reference: string,
@@ -1443,6 +1497,7 @@ function toCompanySkillListItem(skill: CompanySkill, attachedAgentCount: number)
 
 export function companySkillService(db: Db) {
   const agents = agentService(db);
+  const memory = memoryService(db);
   const projects = projectService(db);
   const secretsSvc = secretService(db);
 
@@ -2061,13 +2116,80 @@ export function companySkillService(db: Db) {
         source,
         required,
         requiredReason: required
-          ? "Bundled Paperclip skills are always available for local adapters."
+          ? BUNDLED_RUNTIME_SKILL_REASON
           : null,
       });
     }
 
     out.sort((left, right) => left.key.localeCompare(right.key));
     return out;
+  }
+
+  async function listRuntimeSkillEntriesForExecution(
+    companyId: string,
+    options: RuntimeExecutionSkillEntryOptions,
+  ): Promise<PaperclipSkillEntry[]> {
+    const baseEntries = (await listRuntimeSkillEntries(companyId, options)).map(stripBundledExecutionRequirement);
+    if (!isAgentRole(options.agentRole) || !RUNTIME_MEMORY_BRIDGE_ENABLED_ROLES.has(options.agentRole)) {
+      return baseEntries;
+    }
+    const agentRole = options.agentRole;
+
+    const binding = await memory.resolveBindingByKey({
+      companyId,
+      bindingKey: RUNTIME_MEMORY_BRIDGE_BINDING_KEY,
+    });
+    if (!binding) {
+      return baseEntries;
+    }
+
+    let approvedSnippets: SkillSnippet[] = [];
+    try {
+      approvedSnippets = (await memory.querySkills({
+        companyId,
+        bindingKey: binding.bindingKey,
+        scopeKind: "company",
+        scopeId: companyId,
+        roleFamily: agentRole,
+        query: "",
+        limit: options.limit ?? RUNTIME_MEMORY_BRIDGE_LIMIT,
+        actorType: options.actorType ?? "system",
+        actorId: options.actorId ?? null,
+      })).snippets;
+    } catch {
+      return baseEntries;
+    }
+
+    if (approvedSnippets.length === 0) {
+      return baseEntries;
+    }
+
+    const skills = await listFull(companyId);
+    const promotedKeys = new Set<string>();
+    for (const snippet of approvedSnippets) {
+      for (const reference of readRuntimeSkillReferenceCandidates(snippet)) {
+        const match = resolveSkillReference(skills, reference);
+        if (!match.skill || match.ambiguous) continue;
+        if (readSkillRoleFamily(match.skill) !== agentRole) continue;
+        promotedKeys.add(match.skill.key);
+        break;
+      }
+    }
+
+    if (promotedKeys.size === 0) {
+      return baseEntries;
+    }
+
+    const requiredReason = buildRuntimeRetrievedSkillReason(agentRole);
+    return baseEntries.map((entry) =>
+      promotedKeys.has(entry.key)
+        ? {
+            ...entry,
+            required: true,
+            requiredReason,
+          }
+        : entry,
+    );
   }
 
   async function importPackageFiles(
@@ -2351,5 +2473,6 @@ export function companySkillService(db: Db) {
     importPackageFiles,
     installUpdate,
     listRuntimeSkillEntries,
+    listRuntimeSkillEntriesForExecution,
   };
 }

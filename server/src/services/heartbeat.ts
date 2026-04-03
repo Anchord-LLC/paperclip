@@ -2055,7 +2055,11 @@ export function heartbeatService(db: Db) {
       agent.companyId,
       mergedConfig,
     );
-    const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
+    const runtimeSkillEntries = await companySkills.listRuntimeSkillEntriesForExecution(agent.companyId, {
+      agentRole: agent.role,
+      actorType: "agent",
+      actorId: agent.id,
+    });
     const runtimeConfig = {
       ...resolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
