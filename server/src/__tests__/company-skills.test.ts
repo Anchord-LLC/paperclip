@@ -540,4 +540,136 @@ describeDatabaseBacked("company skill runtime retrieval bridge", () => {
     expect(promoted[0]?.key).toBe(qaDefect.key);
     expect(qaEntries.find((entry) => entry.key === qaReview.key)?.required).toBe(false);
   });
+
+  it("adds bounded approved contextual recall by role and scope without surfacing candidate or archived memory", async () => {
+    const { companyId, binding } = await createCompany();
+
+    await memorySvc.writeMemory({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      namespace: "memory.context.qa",
+      stateKey: "qa-company-bug-bar",
+      kind: "quality_rule",
+      content: "Use the company bug bar as the fallback QA standard when project guidance is missing.",
+      actorType: "user",
+      actorId: "reviewer-1",
+    });
+    await memorySvc.writeMemory({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "project",
+      scopeId: companyId,
+      namespace: "memory.context.qa",
+      stateKey: "qa-project-release-gate",
+      kind: "quality_rule",
+      content: "Block signoff if release notes, repro coverage, and rollback verification are missing.",
+      actorType: "user",
+      actorId: "reviewer-1",
+    });
+    await memorySvc.writeMemory({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "agent",
+      scopeId: companyId,
+      namespace: "memory.context.qa",
+      stateKey: "qa-agent-report-format",
+      kind: "standard",
+      content: "Report QA findings with repro, expected, actual, evidence, and ship risk in that order.",
+      actorType: "user",
+      actorId: "reviewer-1",
+    });
+    await memorySvc.proposeMemory({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      namespace: "memory.context.qa",
+      stateKey: "qa-candidate-ignore",
+      kind: "standard",
+      content: "This candidate should stay hidden until it is reviewed.",
+      actorType: "agent",
+      actorId: companyId,
+    });
+    await memorySvc.writeMemory({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      namespace: "memory.context.qa",
+      stateKey: "qa-archived-ignore",
+      kind: "standard",
+      content: "This archived recall should never be surfaced by default.",
+      actorType: "user",
+      actorId: "reviewer-1",
+    });
+    await memorySvc.archiveMemory({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      namespace: "memory.context.qa",
+      stateKey: "qa-archived-ignore",
+      actorType: "user",
+      actorId: "reviewer-1",
+    });
+    await memorySvc.writeMemory({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      namespace: "memory.context.researcher",
+      stateKey: "researcher-company-evidence",
+      kind: "standard",
+      content: "Lead with cited evidence, then uncertainty, then the final recommendation.",
+      actorType: "user",
+      actorId: "reviewer-2",
+    });
+
+    const qaEntries = await skillsSvc.listRuntimeSkillEntriesForExecution(companyId, {
+      agentRole: "qa",
+      projectId: companyId,
+      actorType: "agent",
+      actorId: companyId,
+      contextLimit: 2,
+    });
+    const researcherEntries = await skillsSvc.listRuntimeSkillEntriesForExecution(companyId, {
+      agentRole: "researcher",
+      actorType: "agent",
+      actorId: "research-runtime-1",
+      contextLimit: 2,
+    });
+
+    const qaContextEntry = qaEntries.find((entry) => entry.requiredReason?.includes("Approved qa contextual recall"));
+    const researcherContextEntry = researcherEntries.find((entry) =>
+      entry.requiredReason?.includes("Approved researcher contextual recall")
+    );
+
+    expect(qaContextEntry).toBeTruthy();
+    expect(researcherContextEntry).toBeTruthy();
+
+    const qaMarkdown = await fs.readFile(path.join(qaContextEntry!.source, "SKILL.md"), "utf8");
+    const researcherMarkdown = await fs.readFile(path.join(researcherContextEntry!.source, "SKILL.md"), "utf8");
+
+    expect(qaMarkdown).toContain("qa-project-release-gate");
+    expect(qaMarkdown).toContain("qa-agent-report-format");
+    expect(qaMarkdown).not.toContain("qa-company-bug-bar");
+    expect(qaMarkdown).not.toContain("qa-candidate-ignore");
+    expect(qaMarkdown).not.toContain("qa-archived-ignore");
+    expect(qaMarkdown).not.toContain("researcher-company-evidence");
+
+    expect(researcherMarkdown).toContain("researcher-company-evidence");
+    expect(researcherMarkdown).not.toContain("qa-project-release-gate");
+
+    const operations = await memorySvc.listRecentOperations({
+      companyId,
+      bindingId: binding.id,
+      limit: 40,
+    });
+
+    expect(operations.filter((entry) => entry.operationType === "query")).toHaveLength(4);
+    expect(operations.filter((entry) => entry.operationType === "query_skills")).toHaveLength(2);
+    expect(operations.every((entry) => entry.status === "success")).toBe(true);
+  });
 });

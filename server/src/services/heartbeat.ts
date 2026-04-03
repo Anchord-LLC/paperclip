@@ -2056,8 +2056,10 @@ export function heartbeatService(db: Db) {
       agent.companyId,
       mergedConfig,
     );
+    const runtimeProjectId = issueContext?.projectId ?? executionProjectId ?? resolvedWorkspace.projectId ?? null;
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntriesForExecution(agent.companyId, {
       agentRole: agent.role,
+      projectId: runtimeProjectId,
       actorType: "agent",
       actorId: agent.id,
     });

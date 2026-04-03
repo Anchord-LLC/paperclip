@@ -108,6 +108,15 @@ type RuntimeExecutionSkillEntryOptions = RuntimeSkillEntryOptions & {
   actorType?: MemoryActorType;
   actorId?: string | null;
   limit?: number;
+  contextLimit?: number;
+  projectId?: string | null;
+};
+
+type RuntimeContextScopeKind = "project" | "agent" | "company";
+
+type RuntimeContextScopeCandidate = {
+  scopeKind: RuntimeContextScopeKind;
+  scopeId: string;
 };
 
 const skillInventoryRefreshPromises = new Map<string, Promise<void>>();
@@ -116,6 +125,10 @@ const CORE_RUNTIME_SKILL_KEY = "paperclipai/paperclip/paperclip";
 const RUNTIME_MEMORY_BRIDGE_BINDING_KEY = "default";
 const RUNTIME_MEMORY_BRIDGE_LIMIT = 2;
 const RUNTIME_MEMORY_BRIDGE_ENABLED_ROLES = new Set<AgentRole>(["qa", "researcher"]);
+const RUNTIME_CONTEXT_RECALL_LIMIT = 3;
+const RUNTIME_CONTEXT_NAMESPACE_PREFIX = "memory.context";
+const RUNTIME_CONTEXT_TEXT_LIMIT = 280;
+const RUNTIME_CONTEXT_SKILL_KEY_PREFIX = "paperclipai/paperclip/runtime-context";
 
 const PROJECT_SCAN_DIRECTORY_ROOTS = [
   "skills",
@@ -1190,6 +1203,105 @@ function buildRuntimeRetrievedSkillReason(agentRole: AgentRole): string {
   return `Approved ${agentRole} skill retrieved from Paperclip Memory for runtime execution.`;
 }
 
+function buildRuntimeContextNamespace(agentRole: AgentRole): string {
+  return `${RUNTIME_CONTEXT_NAMESPACE_PREFIX}.${agentRole}`;
+}
+
+function buildRuntimeContextRetrievedReason(agentRole: AgentRole): string {
+  return `Approved ${agentRole} contextual recall retrieved from Paperclip Memory for runtime execution.`;
+}
+
+function normalizeRuntimeContextText(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= RUNTIME_CONTEXT_TEXT_LIMIT) return normalized;
+  return `${normalized.slice(0, RUNTIME_CONTEXT_TEXT_LIMIT - 3).trimEnd()}...`;
+}
+
+function labelRuntimeContextScope(scopeKind: RuntimeContextScopeKind): string {
+  if (scopeKind === "project") return "Project scope";
+  if (scopeKind === "agent") return "Agent scope";
+  return "Company scope";
+}
+
+function buildRuntimeContextScopeCandidates(
+  companyId: string,
+  options: RuntimeExecutionSkillEntryOptions,
+): RuntimeContextScopeCandidate[] {
+  const candidates: RuntimeContextScopeCandidate[] = [];
+  const seen = new Set<string>();
+
+  const pushCandidate = (scopeKind: RuntimeContextScopeKind, scopeId: string | null | undefined) => {
+    const trimmed = scopeId?.trim();
+    if (!trimmed) return;
+    const key = `${scopeKind}:${trimmed}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({ scopeKind, scopeId: trimmed });
+  };
+
+  pushCandidate("project", options.projectId);
+  pushCandidate("agent", options.actorId);
+  pushCandidate("company", companyId);
+  return candidates;
+}
+
+function buildRuntimeContextSignature(
+  companyId: string,
+  agentRole: AgentRole,
+  scopes: RuntimeContextScopeCandidate[],
+): string {
+  return hashSkillValue([
+    companyId,
+    agentRole,
+    ...scopes.map((scope) => `${scope.scopeKind}:${scope.scopeId}`),
+  ].join("|"));
+}
+
+function buildRuntimeContextMarkdown(params: {
+  agentRole: AgentRole;
+  scopes: RuntimeContextScopeCandidate[];
+  snippets: Array<{
+    stateKey: string;
+    text: string;
+    kind: string;
+    scopeKind: RuntimeContextScopeKind;
+    scopeId: string;
+  }>;
+}): string {
+  const roleLabel = params.agentRole[0]?.toUpperCase() + params.agentRole.slice(1);
+  const lines = [
+    "---",
+    `name: Paperclip ${roleLabel} Contextual Recall`,
+    `description: Approved ${params.agentRole} contextual recall selected from Paperclip Memory for this run.`,
+    `role_family: ${params.agentRole}`,
+    "validation_source: paperclip-memory-approved-context",
+    "---",
+    "",
+    `# Paperclip ${roleLabel} Contextual Recall`,
+    "",
+    "Use this alongside the runtime-approved specialist skills. This file contains only bounded, approved context for the current run.",
+    "",
+    "## Scope Order",
+    ...params.scopes.map((scope, index) => `${index + 1}. ${labelRuntimeContextScope(scope.scopeKind)} (\`${scope.scopeId}\`)`),
+    "",
+    "## Recalled Context",
+  ];
+
+  for (const scope of params.scopes) {
+    const scopeSnippets = params.snippets.filter((snippet) =>
+      snippet.scopeKind === scope.scopeKind && snippet.scopeId === scope.scopeId
+    );
+    if (scopeSnippets.length === 0) continue;
+    lines.push("");
+    lines.push(`### ${labelRuntimeContextScope(scope.scopeKind)} (\`${scope.scopeId}\`)`);
+    for (const snippet of scopeSnippets) {
+      lines.push(`- \`${snippet.stateKey}\` (${snippet.kind}): ${normalizeRuntimeContextText(snippet.text)}`);
+    }
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
 function stripBundledExecutionRequirement(entry: PaperclipSkillEntry): PaperclipSkillEntry {
   if (!entry.required || entry.requiredReason !== BUNDLED_RUNTIME_SKILL_REASON) {
     return entry;
@@ -2092,6 +2204,43 @@ export function companySkillService(db: Db) {
     return path.resolve(runtimeRoot, buildSkillRuntimeName(skill.key, skill.slug));
   }
 
+  async function materializeRuntimeContextSkill(
+    companyId: string,
+    agentRole: AgentRole,
+    scopes: RuntimeContextScopeCandidate[],
+    snippets: Array<{
+      stateKey: string;
+      text: string;
+      kind: string;
+      scopeKind: RuntimeContextScopeKind;
+      scopeId: string;
+    }>,
+  ): Promise<PaperclipSkillEntry | null> {
+    if (snippets.length === 0) return null;
+
+    const runtimeRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__runtime__");
+    const signature = buildRuntimeContextSignature(companyId, agentRole, scopes);
+    const slug = `paperclip-runtime-context-${agentRole}-${signature}`;
+    const key = `${RUNTIME_CONTEXT_SKILL_KEY_PREFIX}/${agentRole}/${signature}`;
+    const skillDir = path.resolve(runtimeRoot, slug);
+
+    await fs.rm(skillDir, { recursive: true, force: true });
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(
+      path.resolve(skillDir, "SKILL.md"),
+      buildRuntimeContextMarkdown({ agentRole, scopes, snippets }),
+      "utf8",
+    );
+
+    return {
+      key,
+      runtimeName: buildSkillRuntimeName(key, slug),
+      source: skillDir,
+      required: true,
+      requiredReason: buildRuntimeContextRetrievedReason(agentRole),
+    };
+  }
+
   async function listRuntimeSkillEntries(
     companyId: string,
     options: RuntimeSkillEntryOptions = {},
@@ -2143,6 +2292,7 @@ export function companySkillService(db: Db) {
       return baseEntries;
     }
 
+    let executionEntries = baseEntries;
     let approvedSnippets: SkillSnippet[] = [];
     try {
       approvedSnippets = (await memory.querySkills({
@@ -2157,39 +2307,86 @@ export function companySkillService(db: Db) {
         actorId: options.actorId ?? null,
       })).snippets;
     } catch {
-      return baseEntries;
+      approvedSnippets = [];
     }
 
-    if (approvedSnippets.length === 0) {
-      return baseEntries;
-    }
+    if (approvedSnippets.length > 0) {
+      const skills = await listFull(companyId);
+      const promotedKeys = new Set<string>();
+      for (const snippet of approvedSnippets) {
+        for (const reference of readRuntimeSkillReferenceCandidates(snippet)) {
+          const match = resolveSkillReference(skills, reference);
+          if (!match.skill || match.ambiguous) continue;
+          if (readSkillRoleFamily(match.skill) !== agentRole) continue;
+          promotedKeys.add(match.skill.key);
+          break;
+        }
+      }
 
-    const skills = await listFull(companyId);
-    const promotedKeys = new Set<string>();
-    for (const snippet of approvedSnippets) {
-      for (const reference of readRuntimeSkillReferenceCandidates(snippet)) {
-        const match = resolveSkillReference(skills, reference);
-        if (!match.skill || match.ambiguous) continue;
-        if (readSkillRoleFamily(match.skill) !== agentRole) continue;
-        promotedKeys.add(match.skill.key);
-        break;
+      if (promotedKeys.size > 0) {
+        const requiredReason = buildRuntimeRetrievedSkillReason(agentRole);
+        executionEntries = baseEntries.map((entry) =>
+          promotedKeys.has(entry.key)
+            ? {
+                ...entry,
+                required: true,
+                requiredReason,
+              }
+            : entry,
+        );
       }
     }
 
-    if (promotedKeys.size === 0) {
-      return baseEntries;
+    const scopeCandidates = buildRuntimeContextScopeCandidates(companyId, options);
+    const contextualSnippets: Array<{
+      stateKey: string;
+      text: string;
+      kind: string;
+      scopeKind: RuntimeContextScopeKind;
+      scopeId: string;
+    }> = [];
+    const contextualLimit = options.contextLimit ?? RUNTIME_CONTEXT_RECALL_LIMIT;
+
+    if (contextualLimit > 0) {
+      try {
+        for (const scope of scopeCandidates) {
+          if (contextualSnippets.length >= contextualLimit) break;
+          const remaining = contextualLimit - contextualSnippets.length;
+          const result = await memory.queryMemory({
+            companyId,
+            bindingKey: binding.bindingKey,
+            scopeKind: scope.scopeKind,
+            scopeId: scope.scopeId,
+            namespace: buildRuntimeContextNamespace(agentRole),
+            query: "",
+            limit: remaining,
+            actorType: options.actorType ?? "system",
+            actorId: options.actorId ?? null,
+          });
+          for (const snippet of result.snippets) {
+            contextualSnippets.push({
+              stateKey: snippet.stateKey,
+              text: snippet.text,
+              kind: snippet.kind,
+              scopeKind: scope.scopeKind,
+              scopeId: scope.scopeId,
+            });
+            if (contextualSnippets.length >= contextualLimit) break;
+          }
+        }
+      } catch {
+        // Keep runtime execution resilient if contextual recall fails.
+      }
     }
 
-    const requiredReason = buildRuntimeRetrievedSkillReason(agentRole);
-    return baseEntries.map((entry) =>
-      promotedKeys.has(entry.key)
-        ? {
-            ...entry,
-            required: true,
-            requiredReason,
-          }
-        : entry,
-    );
+    const contextualEntry = await materializeRuntimeContextSkill(
+      companyId,
+      agentRole,
+      scopeCandidates,
+      contextualSnippets,
+    ).catch(() => null);
+
+    return contextualEntry ? [...executionEntries, contextualEntry] : executionEntries;
   }
 
   async function importPackageFiles(
