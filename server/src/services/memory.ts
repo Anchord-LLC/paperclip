@@ -1,7 +1,9 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { memoryBindings, memoryOperations, plugins } from "@paperclipai/db";
+import { AGENT_ROLES } from "@paperclipai/shared";
 import type {
+  AgentRole,
   CreateMemoryBindingInput,
   ListMemoryOperationsInput,
   LogMemoryOperationInput,
@@ -19,6 +21,13 @@ import type {
   OperationalMemoryStatus,
   PaperclipPluginManifestV1,
   ResolveMemoryBindingInput,
+  SkillMemoryKind,
+  SkillMemoryStatus,
+  SkillProposeRequest,
+  SkillQueryRequest,
+  SkillQueryResult,
+  SkillSnippet,
+  SkillStatusChangeRequest,
   UpdateMemoryBindingStatusInput,
 } from "@paperclipai/shared";
 import { pluginStateStore } from "./plugin-state-store.js";
@@ -54,11 +63,33 @@ const OPERATIONAL_MEMORY_STATUSES = new Set<OperationalMemoryStatus>([
   "archived",
 ]);
 
+const SKILL_MEMORY_KINDS = new Set<SkillMemoryKind>([
+  "specialist_skill",
+]);
+
+const SKILL_MEMORY_STATUSES = new Set<SkillMemoryStatus>([
+  "candidate",
+  "approved",
+  "archived",
+]);
+
 type LocalMemoryValue = {
   text: string;
   metadata: Record<string, unknown>;
   kind: OperationalMemoryKind;
   status: OperationalMemoryStatus;
+  proposedAt: string;
+  approvedAt: string | null;
+  archivedAt: string | null;
+  updatedAt: string;
+};
+
+type LocalSkillValue = {
+  text: string;
+  metadata: Record<string, unknown>;
+  kind: SkillMemoryKind;
+  status: SkillMemoryStatus;
+  roleFamily: AgentRole;
   proposedAt: string;
   approvedAt: string | null;
   archivedAt: string | null;
@@ -86,6 +117,13 @@ type ProviderQueryResult = MemoryQueryResult & {
   usage?: Record<string, unknown>;
 };
 
+type SkillWriteInput = SkillProposeRequest & {
+  status?: SkillMemoryStatus;
+  proposedAt?: Date | null;
+  approvedAt?: Date | null;
+  archivedAt?: Date | null;
+};
+
 interface MemoryProvider {
   key: string;
   capabilities: MemoryProviderCapabilities;
@@ -100,6 +138,18 @@ function isOperationalMemoryKind(value: unknown): value is OperationalMemoryKind
 
 function isOperationalMemoryStatus(value: unknown): value is OperationalMemoryStatus {
   return typeof value === "string" && OPERATIONAL_MEMORY_STATUSES.has(value as OperationalMemoryStatus);
+}
+
+function isAgentRole(value: unknown): value is AgentRole {
+  return typeof value === "string" && AGENT_ROLES.includes(value as AgentRole);
+}
+
+function isSkillMemoryKind(value: unknown): value is SkillMemoryKind {
+  return typeof value === "string" && SKILL_MEMORY_KINDS.has(value as SkillMemoryKind);
+}
+
+function isSkillMemoryStatus(value: unknown): value is SkillMemoryStatus {
+  return typeof value === "string" && SKILL_MEMORY_STATUSES.has(value as SkillMemoryStatus);
 }
 
 function normalizeMetadata(value: unknown): Record<string, unknown> {
@@ -117,6 +167,14 @@ function normalizeNamespace(binding: MemoryBinding, namespace?: string): string 
 
 function toStorageNamespace(companyId: string, namespace: string): string {
   return `paperclip-memory:${companyId}:${namespace}`;
+}
+
+function normalizeSkillNamespace(binding: MemoryBinding, namespace?: string): string {
+  return namespace?.trim() || `${normalizeNamespace(binding)}.skills`;
+}
+
+function toSkillStorageNamespace(companyId: string, namespace: string, roleFamily: AgentRole): string {
+  return `${toStorageNamespace(companyId, namespace)}:role:${roleFamily}`;
 }
 
 function coerceDate(value: Date | string | null | undefined, fallback: Date | null): Date | null {
@@ -159,6 +217,34 @@ function buildLocalMemoryValue(input: ProviderWriteInput, updatedAt: Date): Loca
   };
 }
 
+function buildLocalSkillValue(input: SkillWriteInput, updatedAt: Date): LocalSkillValue {
+  const kind = input.kind ?? "specialist_skill";
+  const status = input.status ?? "approved";
+  const proposedAt = coerceDate(input.proposedAt, updatedAt) ?? updatedAt;
+
+  const approvedAt = status === "candidate"
+    ? null
+    : status === "approved"
+      ? coerceDate(input.approvedAt, updatedAt) ?? updatedAt
+      : coerceDate(input.approvedAt, null);
+
+  const archivedAt = status === "archived"
+    ? coerceDate(input.archivedAt, updatedAt) ?? updatedAt
+    : null;
+
+  return {
+    text: input.content,
+    metadata: normalizeMetadata(input.metadata),
+    kind,
+    status,
+    roleFamily: input.roleFamily,
+    proposedAt: toIsoString(proposedAt) ?? updatedAt.toISOString(),
+    approvedAt: toIsoString(approvedAt),
+    archivedAt: toIsoString(archivedAt),
+    updatedAt: updatedAt.toISOString(),
+  };
+}
+
 function parseLocalMemoryValue(value: unknown): LocalMemoryValue | null {
   if (!value || typeof value !== "object") return null;
 
@@ -185,6 +271,41 @@ function parseLocalMemoryValue(value: unknown): LocalMemoryValue | null {
     metadata: normalizeMetadata(record.metadata),
     kind,
     status,
+    proposedAt,
+    approvedAt,
+    archivedAt,
+    updatedAt,
+  };
+}
+
+function parseLocalSkillValue(value: unknown): LocalSkillValue | null {
+  if (!value || typeof value !== "object") return null;
+
+  const record = value as Record<string, unknown>;
+  if (typeof record.text !== "string") return null;
+  if (!isAgentRole(record.roleFamily)) return null;
+
+  const updatedAt = typeof record.updatedAt === "string" ? record.updatedAt : new Date().toISOString();
+  const kind = isSkillMemoryKind(record.kind) ? record.kind : "specialist_skill";
+  const status = isSkillMemoryStatus(record.status) ? record.status : "approved";
+  const proposedAt = typeof record.proposedAt === "string" ? record.proposedAt : updatedAt;
+  const approvedAt = typeof record.approvedAt === "string"
+    ? record.approvedAt
+    : status === "approved"
+      ? updatedAt
+      : null;
+  const archivedAt = typeof record.archivedAt === "string"
+    ? record.archivedAt
+    : status === "archived"
+      ? updatedAt
+      : null;
+
+  return {
+    text: record.text,
+    metadata: normalizeMetadata(record.metadata),
+    kind,
+    status,
+    roleFamily: record.roleFamily,
     proposedAt,
     approvedAt,
     archivedAt,
@@ -228,6 +349,44 @@ function buildSnippet(binding: MemoryBinding, input: {
   };
 }
 
+function buildSkillSnippet(binding: MemoryBinding, input: {
+  stateKey: string;
+  text: string;
+  kind: SkillMemoryKind;
+  status: SkillMemoryStatus;
+  roleFamily: AgentRole;
+  scopeKind: string;
+  scopeId: string | null;
+  namespace: string;
+  metadata?: Record<string, unknown>;
+  proposedAt: Date;
+  approvedAt: Date | null;
+  archivedAt: Date | null;
+  updatedAt: Date;
+  score?: number;
+}): SkillSnippet {
+  return {
+    handle: {
+      providerKey: binding.providerKey,
+      providerRecordId: input.stateKey,
+    },
+    stateKey: input.stateKey,
+    text: input.text,
+    kind: input.kind,
+    status: input.status,
+    roleFamily: input.roleFamily,
+    scopeKind: input.scopeKind as SkillSnippet["scopeKind"],
+    scopeId: input.scopeId,
+    namespace: input.namespace,
+    metadata: input.metadata ?? {},
+    proposedAt: input.proposedAt,
+    approvedAt: input.approvedAt,
+    archivedAt: input.archivedAt,
+    updatedAt: input.updatedAt,
+    score: input.score,
+  };
+}
+
 function scoreSnippet(query: string, stateKey: string, text: string): number {
   const normalizedQuery = query.trim().toLowerCase();
   if (!normalizedQuery) return 0;
@@ -250,6 +409,13 @@ function scoreSnippet(query: string, stateKey: string, text: string): number {
 }
 
 function isSnippetVisibleInQuery(snippet: MemorySnippet, input: MemoryQueryRequest): boolean {
+  if (snippet.status === "approved") return true;
+  if (snippet.status === "candidate") return Boolean(input.includeCandidate);
+  if (snippet.status === "archived") return Boolean(input.includeArchived);
+  return false;
+}
+
+function isSkillSnippetVisibleInQuery(snippet: SkillSnippet, input: SkillQueryRequest): boolean {
   if (snippet.status === "approved") return true;
   if (snippet.status === "candidate") return Boolean(input.includeCandidate);
   if (snippet.status === "archived") return Boolean(input.includeArchived);
@@ -297,6 +463,126 @@ export function memoryService(db: Db) {
     }
 
     return created[0].id;
+  }
+
+  function assertLocalSkillBinding(binding: MemoryBinding): void {
+    if (binding.providerKey !== "local") {
+      throw new Error(`Skill memory is only supported for local bindings: ${binding.providerKey}`);
+    }
+  }
+
+  async function writeSkillRecord(binding: MemoryBinding, input: SkillWriteInput): Promise<SkillSnippet> {
+    assertLocalSkillBinding(binding);
+    const pluginId = binding.pluginId ?? await ensureLocalMemoryPluginId();
+    const scopeId = normalizeScopeId(binding.companyId, input.scopeKind, input.scopeId);
+    const namespace = normalizeSkillNamespace(binding, input.namespace);
+    const updatedAt = new Date();
+    const value = buildLocalSkillValue(input, updatedAt);
+
+    await stateStore.set(pluginId, {
+      scopeKind: input.scopeKind,
+      scopeId: scopeId ?? undefined,
+      namespace: toSkillStorageNamespace(binding.companyId, namespace, input.roleFamily),
+      stateKey: input.stateKey,
+      value,
+    });
+
+    return buildSkillSnippet(binding, {
+      stateKey: input.stateKey,
+      text: value.text,
+      kind: value.kind,
+      status: value.status,
+      roleFamily: value.roleFamily,
+      scopeKind: input.scopeKind,
+      scopeId,
+      namespace,
+      metadata: value.metadata,
+      proposedAt: new Date(value.proposedAt),
+      approvedAt: value.approvedAt ? new Date(value.approvedAt) : null,
+      archivedAt: value.archivedAt ? new Date(value.archivedAt) : null,
+      updatedAt,
+    });
+  }
+
+  async function readSkillRecord(
+    binding: MemoryBinding,
+    input: SkillStatusChangeRequest,
+  ): Promise<SkillSnippet | null> {
+    assertLocalSkillBinding(binding);
+    const pluginId = binding.pluginId ?? await ensureLocalMemoryPluginId();
+    const scopeId = normalizeScopeId(binding.companyId, input.scopeKind, input.scopeId);
+    const namespace = normalizeSkillNamespace(binding, input.namespace);
+    const raw = await stateStore.get(pluginId, input.scopeKind, input.stateKey, {
+      scopeId: scopeId ?? undefined,
+      namespace: toSkillStorageNamespace(binding.companyId, namespace, input.roleFamily),
+    });
+    const parsed = parseLocalSkillValue(raw);
+
+    if (!parsed) {
+      return null;
+    }
+
+    return buildSkillSnippet(binding, {
+      stateKey: input.stateKey,
+      text: parsed.text,
+      kind: parsed.kind,
+      status: parsed.status,
+      roleFamily: parsed.roleFamily,
+      scopeKind: input.scopeKind,
+      scopeId,
+      namespace,
+      metadata: parsed.metadata,
+      proposedAt: new Date(parsed.proposedAt),
+      approvedAt: parsed.approvedAt ? new Date(parsed.approvedAt) : null,
+      archivedAt: parsed.archivedAt ? new Date(parsed.archivedAt) : null,
+      updatedAt: new Date(parsed.updatedAt),
+    });
+  }
+
+  async function querySkillRecords(binding: MemoryBinding, input: SkillQueryRequest): Promise<SkillQueryResult> {
+    assertLocalSkillBinding(binding);
+    const pluginId = binding.pluginId ?? await ensureLocalMemoryPluginId();
+    const scopeId = normalizeScopeId(binding.companyId, input.scopeKind, input.scopeId);
+    const namespace = normalizeSkillNamespace(binding, input.namespace);
+    const rows = await stateStore.list(pluginId, {
+      scopeKind: input.scopeKind,
+      scopeId: scopeId ?? undefined,
+      namespace: toSkillStorageNamespace(binding.companyId, namespace, input.roleFamily),
+    });
+
+    const snippets = rows
+      .map((row) => {
+        const parsed = parseLocalSkillValue(row.valueJson);
+        if (!parsed) return null;
+
+        const score = scoreSnippet(input.query, row.stateKey, parsed.text);
+        if (input.query.trim().length > 0 && score <= 0) return null;
+
+        return buildSkillSnippet(binding, {
+          stateKey: row.stateKey,
+          text: parsed.text,
+          kind: parsed.kind,
+          status: parsed.status,
+          roleFamily: parsed.roleFamily,
+          scopeKind: row.scopeKind,
+          scopeId: row.scopeId,
+          namespace,
+          metadata: parsed.metadata,
+          proposedAt: new Date(parsed.proposedAt),
+          approvedAt: parsed.approvedAt ? new Date(parsed.approvedAt) : null,
+          archivedAt: parsed.archivedAt ? new Date(parsed.archivedAt) : null,
+          updatedAt: new Date(parsed.updatedAt),
+          score,
+        });
+      })
+      .filter((row): row is SkillSnippet => row !== null)
+      .sort((left, right) => {
+        const scoreDelta = (right.score ?? 0) - (left.score ?? 0);
+        if (scoreDelta != 0) return scoreDelta;
+        return right.updatedAt.getTime() - left.updatedAt.getTime();
+      });
+
+    return { snippets };
   }
 
   const localProvider: MemoryProvider = {
@@ -447,6 +733,17 @@ export function memoryService(db: Db) {
       throw new Error(`Memory not found: ${input.stateKey}`);
     }
     return result.snippet;
+  }
+
+  async function readExistingSkill(
+    binding: MemoryBinding,
+    input: SkillStatusChangeRequest,
+  ): Promise<SkillSnippet> {
+    const snippet = await readSkillRecord(binding, input);
+    if (!snippet) {
+      throw new Error(`Skill memory not found: ${input.stateKey}`);
+    }
+    return snippet;
   }
 
   async function logExecution<T>(params: {
@@ -822,6 +1119,210 @@ export function memoryService(db: Db) {
               status: result.snippet.status,
             },
             usage: result.usage,
+          };
+        },
+      });
+    },
+
+    async proposeSkill(input: SkillProposeRequest): Promise<SkillSnippet> {
+      const binding = await resolveActiveBinding(input.companyId, input.bindingKey);
+      const scopeId = normalizeScopeId(binding.companyId, input.scopeKind, input.scopeId);
+      const namespace = normalizeSkillNamespace(binding, input.namespace);
+
+      return logExecution({
+        binding,
+        operationType: "propose_skill",
+        scopeKind: input.scopeKind,
+        scopeId,
+        namespace,
+        stateKey: input.stateKey,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        request: {
+          bindingKey: input.bindingKey,
+          scopeKind: input.scopeKind,
+          scopeId,
+          namespace,
+          stateKey: input.stateKey,
+          roleFamily: input.roleFamily,
+          kind: input.kind ?? "specialist_skill",
+          content: input.content,
+          metadata: input.metadata ?? {},
+        },
+        action: async () => {
+          const snippet = await writeSkillRecord(binding, {
+            ...input,
+            status: "candidate",
+          });
+          return {
+            result: snippet,
+            response: {
+              stateKey: snippet.stateKey,
+              roleFamily: snippet.roleFamily,
+              kind: snippet.kind,
+              status: snippet.status,
+              providerRecordId: snippet.handle.providerRecordId,
+            },
+          };
+        },
+      });
+    },
+
+    async approveSkill(input: SkillStatusChangeRequest): Promise<SkillSnippet> {
+      const binding = await resolveActiveBinding(input.companyId, input.bindingKey);
+      const scopeId = normalizeScopeId(binding.companyId, input.scopeKind, input.scopeId);
+      const namespace = normalizeSkillNamespace(binding, input.namespace);
+
+      return logExecution({
+        binding,
+        operationType: "approve_skill",
+        scopeKind: input.scopeKind,
+        scopeId,
+        namespace,
+        stateKey: input.stateKey,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        request: {
+          bindingKey: input.bindingKey,
+          scopeKind: input.scopeKind,
+          scopeId,
+          namespace,
+          stateKey: input.stateKey,
+          roleFamily: input.roleFamily,
+        },
+        action: async () => {
+          const existing = await readExistingSkill(binding, input);
+          if (existing.status === "archived") {
+            throw new Error(`Archived skill memory cannot be approved: ${input.stateKey}`);
+          }
+
+          const snippet = await writeSkillRecord(binding, {
+            ...input,
+            content: existing.text,
+            kind: existing.kind,
+            roleFamily: existing.roleFamily,
+            metadata: existing.metadata ?? {},
+            status: "approved",
+            proposedAt: existing.proposedAt,
+            approvedAt: existing.approvedAt ?? new Date(),
+          });
+
+          return {
+            result: snippet,
+            response: {
+              stateKey: snippet.stateKey,
+              roleFamily: snippet.roleFamily,
+              kind: snippet.kind,
+              status: snippet.status,
+            },
+          };
+        },
+      });
+    },
+
+    async archiveSkill(input: SkillStatusChangeRequest): Promise<SkillSnippet> {
+      const binding = await resolveActiveBinding(input.companyId, input.bindingKey);
+      const scopeId = normalizeScopeId(binding.companyId, input.scopeKind, input.scopeId);
+      const namespace = normalizeSkillNamespace(binding, input.namespace);
+
+      return logExecution({
+        binding,
+        operationType: "archive_skill",
+        scopeKind: input.scopeKind,
+        scopeId,
+        namespace,
+        stateKey: input.stateKey,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        request: {
+          bindingKey: input.bindingKey,
+          scopeKind: input.scopeKind,
+          scopeId,
+          namespace,
+          stateKey: input.stateKey,
+          roleFamily: input.roleFamily,
+        },
+        action: async () => {
+          const existing = await readExistingSkill(binding, input);
+
+          if (existing.status === "archived") {
+            return {
+              result: existing,
+              response: {
+                stateKey: existing.stateKey,
+                roleFamily: existing.roleFamily,
+                kind: existing.kind,
+                status: existing.status,
+              },
+            };
+          }
+
+          const snippet = await writeSkillRecord(binding, {
+            ...input,
+            content: existing.text,
+            kind: existing.kind,
+            roleFamily: existing.roleFamily,
+            metadata: existing.metadata ?? {},
+            status: "archived",
+            proposedAt: existing.proposedAt,
+            approvedAt: existing.approvedAt,
+            archivedAt: existing.archivedAt ?? new Date(),
+          });
+
+          return {
+            result: snippet,
+            response: {
+              stateKey: snippet.stateKey,
+              roleFamily: snippet.roleFamily,
+              kind: snippet.kind,
+              status: snippet.status,
+            },
+          };
+        },
+      });
+    },
+
+    async querySkills(input: SkillQueryRequest): Promise<SkillQueryResult> {
+      const binding = await resolveActiveBinding(input.companyId, input.bindingKey);
+      const scopeId = normalizeScopeId(binding.companyId, input.scopeKind, input.scopeId);
+      const namespace = normalizeSkillNamespace(binding, input.namespace);
+
+      return logExecution({
+        binding,
+        operationType: "query_skills",
+        scopeKind: input.scopeKind,
+        scopeId,
+        namespace,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        request: {
+          bindingKey: input.bindingKey,
+          scopeKind: input.scopeKind,
+          scopeId,
+          namespace,
+          roleFamily: input.roleFamily,
+          query: input.query,
+          limit: input.limit ?? 10,
+          includeCandidate: input.includeCandidate ?? false,
+          includeArchived: input.includeArchived ?? false,
+        },
+        action: async () => {
+          const providerResult = await querySkillRecords(binding, input);
+          const result = {
+            ...providerResult,
+            snippets: providerResult.snippets
+              .filter((snippet) => isSkillSnippetVisibleInQuery(snippet, input))
+              .slice(0, input.limit ?? 10),
+          };
+
+          return {
+            result,
+            response: {
+              hits: result.snippets.length,
+              stateKeys: result.snippets.map((snippet) => snippet.stateKey),
+              statuses: result.snippets.map((snippet) => snippet.status),
+              roleFamily: input.roleFamily,
+            },
           };
         },
       });

@@ -413,4 +413,161 @@ describeDatabaseBacked("memoryService", () => {
     expect(operations.filter((operation) => operation.operationType === "archive")).toHaveLength(1);
     expect(operations.filter((operation) => operation.operationType === "query")).toHaveLength(4);
   });
+
+  it("keeps specialist skills approved-only and role-matched by default", async () => {
+    const companyId = randomUUID();
+    companyIdsToCleanup.push(companyId);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const binding = await svc.createBinding({
+      companyId,
+      bindingKey: "default",
+      label: "Default Memory",
+      providerKey: "local",
+      namespace: "memory",
+      capabilities: { read: true, query: true, write: true },
+    });
+
+    expect(binding).toBeTruthy();
+
+    const proposed = await svc.proposeSkill({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      stateKey: "incident-triage-checklist",
+      roleFamily: "engineer",
+      content: "Use the incident triage checklist before escalating to the on-call rotation.",
+      metadata: { source: "runbook" },
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(proposed.status).toBe("candidate");
+    expect(proposed.kind).toBe("specialist_skill");
+    expect(proposed.roleFamily).toBe("engineer");
+
+    const defaultEngineerQueryBeforeApproval = await svc.querySkills({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      roleFamily: "engineer",
+      query: "triage checklist",
+      limit: 5,
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(defaultEngineerQueryBeforeApproval.snippets).toHaveLength(0);
+
+    const engineerCandidateQuery = await svc.querySkills({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      roleFamily: "engineer",
+      query: "triage checklist",
+      limit: 5,
+      includeCandidate: true,
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(engineerCandidateQuery.snippets).toHaveLength(1);
+    expect(engineerCandidateQuery.snippets[0]?.status).toBe("candidate");
+    expect(engineerCandidateQuery.snippets[0]?.roleFamily).toBe("engineer");
+
+    const approved = await svc.approveSkill({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      stateKey: "incident-triage-checklist",
+      roleFamily: "engineer",
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(approved.status).toBe("approved");
+    expect(approved.approvedAt).toBeTruthy();
+
+    const defaultEngineerQueryAfterApproval = await svc.querySkills({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      roleFamily: "engineer",
+      query: "triage checklist",
+      limit: 5,
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(defaultEngineerQueryAfterApproval.snippets).toHaveLength(1);
+    expect(defaultEngineerQueryAfterApproval.snippets[0]?.status).toBe("approved");
+    expect(defaultEngineerQueryAfterApproval.snippets[0]?.roleFamily).toBe("engineer");
+
+    const unrelatedRoleQuery = await svc.querySkills({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      roleFamily: "designer",
+      query: "triage checklist",
+      limit: 5,
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(unrelatedRoleQuery.snippets).toHaveLength(0);
+
+    const archived = await svc.archiveSkill({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      stateKey: "incident-triage-checklist",
+      roleFamily: "engineer",
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(archived.status).toBe("archived");
+    expect(archived.archivedAt).toBeTruthy();
+
+    const defaultEngineerQueryAfterArchive = await svc.querySkills({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      roleFamily: "engineer",
+      query: "triage checklist",
+      limit: 5,
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(defaultEngineerQueryAfterArchive.snippets).toHaveLength(0);
+
+    const operations = await svc.listRecentOperations({
+      companyId,
+      bindingId: binding!.id,
+      limit: 20,
+    });
+
+    expect(operations).toHaveLength(8);
+    expect(operations.every((operation) => operation.status === "success")).toBe(true);
+    expect(operations.filter((operation) => operation.operationType === "propose_skill")).toHaveLength(1);
+    expect(operations.filter((operation) => operation.operationType === "approve_skill")).toHaveLength(1);
+    expect(operations.filter((operation) => operation.operationType === "archive_skill")).toHaveLength(1);
+    expect(operations.filter((operation) => operation.operationType === "query_skills")).toHaveLength(5);
+  });
+
 });
