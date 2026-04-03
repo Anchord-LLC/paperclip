@@ -48,9 +48,37 @@ export interface KalshiOrderbook {
 }
 
 export interface KalshiBalance {
-  balanceUsd: number;
-  portfolioValueUsd: number;
+  balanceUsd: number | null;
+  portfolioValueUsd: number | null;
   updatedAt: Date | null;
+}
+
+export type KalshiRequestErrorKind = "http_error" | "network_error" | "malformed_response";
+
+export class KalshiRequestError extends Error {
+  readonly kind: KalshiRequestErrorKind;
+  readonly status: number | null;
+  readonly pathname: string;
+  readonly responseBodySnippet: string | null;
+
+  constructor(options: {
+    message: string;
+    kind: KalshiRequestErrorKind;
+    status: number | null;
+    pathname: string;
+    responseBodySnippet?: string | null;
+  }) {
+    super(options.message);
+    this.name = "KalshiRequestError";
+    this.kind = options.kind;
+    this.status = options.status;
+    this.pathname = options.pathname;
+    this.responseBodySnippet = options.responseBodySnippet ?? null;
+  }
+}
+
+export function isKalshiRequestError(error: unknown): error is KalshiRequestError {
+  return error instanceof KalshiRequestError;
 }
 
 export interface KalshiPosition {
@@ -188,19 +216,48 @@ export function createKalshiClient(baseUrl: string = process.env.KALSHI_API_BASE
       });
     }
 
-    const response = await fetch(url, {
-      method,
-      headers,
-      body: options?.body ? JSON.stringify(options.body) : undefined,
-      signal: AbortSignal.timeout(15_000),
-    });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method,
+        headers,
+        body: options?.body ? JSON.stringify(options.body) : undefined,
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new KalshiRequestError({
+        message: `Kalshi network request failed for ${url.pathname}: ${detail}`,
+        kind: "network_error",
+        status: null,
+        pathname: url.pathname,
+        responseBodySnippet: detail.slice(0, 240),
+      });
+    }
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new Error(`Kalshi request failed (${response.status}) for ${url.pathname}: ${body.slice(0, 240)}`);
+      throw new KalshiRequestError({
+        message: `Kalshi request failed (${response.status}) for ${url.pathname}: ${body.slice(0, 240)}`,
+        kind: "http_error",
+        status: response.status,
+        pathname: url.pathname,
+        responseBodySnippet: body.slice(0, 240),
+      });
     }
 
-    return response.json() as Promise<T>;
+    try {
+      return await response.json() as T;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new KalshiRequestError({
+        message: `Kalshi response parse failed for ${url.pathname}: ${detail}`,
+        kind: "malformed_response",
+        status: response.status,
+        pathname: url.pathname,
+        responseBodySnippet: detail.slice(0, 240),
+      });
+    }
   }
 
   async function getMarkets(options?: {
@@ -286,9 +343,20 @@ export function createKalshiClient(baseUrl: string = process.env.KALSHI_API_BASE
     const response = await request<{ balance?: unknown; portfolio_value?: unknown; updated_ts?: unknown }>("portfolio/balance", {
       credentials,
     });
+    const balanceUsd = toUsdFromCents(response.balance);
+    const portfolioValueUsd = toUsdFromCents(response.portfolio_value);
+    if (balanceUsd == null && portfolioValueUsd == null) {
+      throw new KalshiRequestError({
+        message: "Kalshi balance response is missing both balance and portfolio_value",
+        kind: "malformed_response",
+        status: 200,
+        pathname: "/trade-api/v2/portfolio/balance",
+        responseBodySnippet: "missing balance and portfolio_value",
+      });
+    }
     return {
-      balanceUsd: toUsdFromCents(response.balance) ?? 0,
-      portfolioValueUsd: toUsdFromCents(response.portfolio_value) ?? 0,
+      balanceUsd,
+      portfolioValueUsd,
       updatedAt: toDate(response.updated_ts),
     };
   }

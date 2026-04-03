@@ -42,7 +42,7 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
@@ -2185,12 +2185,26 @@ export function agentRoutes(db: Db) {
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = Number(req.query.limitBytes ?? 256000);
-    const result = await heartbeat.readLog(runId, {
-      offset: Number.isFinite(offset) ? offset : 0,
-      limitBytes: Number.isFinite(limitBytes) ? limitBytes : 256000,
-    });
 
-    res.json(result);
+    try {
+      const result = await heartbeat.readLog(runId, {
+        offset: Number.isFinite(offset) ? offset : 0,
+        limitBytes: Number.isFinite(limitBytes) ? limitBytes : 256000,
+      });
+
+      res.json(result);
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 404 && error.message === "Run log not found") {
+        res.json({
+          runId,
+          store: run.logStore ?? "local_file",
+          logRef: run.logRef ?? "",
+          content: "",
+        });
+        return;
+      }
+      throw error;
+    }
   });
 
   router.get("/heartbeat-runs/:runId/workspace-operations", async (req, res) => {

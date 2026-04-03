@@ -86,6 +86,7 @@ const DESK_SECTIONS = [
   { id: "risk-blocks", page: "risk-blocks", label: "Risk / Blocks", icon: ShieldAlert },
   { id: "auth-readiness", page: "auth-readiness", label: "Auth Readiness", icon: KeyRound },
   { id: "live-readiness", page: "live-readiness", label: "Live Readiness", icon: Radar },
+  { id: "mirror-attempts", page: "mirror-attempts", label: "Mirror Attempts", icon: ArrowUpRight },
   { id: "audit", page: "audit", label: "Audit", icon: ScrollText },
 ] as const;
 
@@ -143,6 +144,27 @@ function formatPercent(value: number | null | undefined): string {
   return `${value.toFixed(1)}%`;
 }
 
+function formatUsdOrUnavailable(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) ? formatUsd(value) : "n/a";
+}
+
+function formatKalshiBalanceSource(value: PolymarketCopyDashboardData["kalshiReadiness"]["balanceSource"]): string {
+  if (value === "subaccount") return "Subaccount";
+  if (value === "primary_account") return "Primary account";
+  return "n/a";
+}
+
+function formatKalshiBalanceState(data: PolymarketCopyDashboardData["kalshiReadiness"]): string {
+  if (data.balancesReachable) return "ready";
+  return data.balanceErrorClass ?? "not_ready";
+}
+
+function formatKalshiBalanceStateVariant(data: PolymarketCopyDashboardData["kalshiReadiness"]): "secondary" | "outline" | "destructive" {
+  if (data.balancesReachable) return "secondary";
+  if (data.balanceErrorClass) return "destructive";
+  return "outline";
+}
+
 function formatDurationMinutes(value: number | null | undefined): string {
   if (typeof value !== "number" || Number.isNaN(value)) return "n/a";
   if (value < 60) return `${Math.round(value)}m`;
@@ -163,6 +185,265 @@ function asNumber(value: unknown): number | null {
 function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
+
+type MirrorAttemptMatchClass = "matched" | "near_match" | "rejected";
+
+interface MirrorAttemptDiagnostic {
+  id: string;
+  timestamp: Date | string;
+  sourceWallet: string;
+  sourceWalletShort: string;
+  sourceMarket: string;
+  sourceMarketDetail: string | null;
+  sourceSide: string | null;
+  sourceAction: string;
+  cadence: string;
+  bestCandidate: string | null;
+  closestCandidate: string | null;
+  candidateTicker: string | null;
+  matchConfidence: number | null;
+  matchClass: MirrorAttemptMatchClass;
+  rejectReasonCode: string | null;
+  rejectReasonLabel: string;
+  rejectBucket: string | null;
+  rejectDetail: string | null;
+  tradabilityState: string | null;
+  spreadBps: number | null;
+  liquidityUsd: number | null;
+  simulatedOrderSizeUsd: number | null;
+  simulatedFillPrice: number | null;
+}
+
+const MIRROR_REJECT_REASON_LABELS: Record<string, string> = {
+  source_market_title_missing: "Source market title missing",
+  kalshi_open_market_not_found: "No open Kalshi markets found",
+  kalshi_no_equivalent_market: "No equivalent Kalshi market",
+  kalshi_weak_semantic_match: "Weak semantic match",
+  kalshi_contract_settlement_mismatch: "Contract or settlement mismatch",
+  kalshi_market_not_tradable: "Market not tradable",
+  kalshi_spread_too_wide: "Spread too wide",
+  kalshi_liquidity_too_thin: "Liquidity too thin",
+  kalshi_execution_disabled: "Kalshi execution disabled",
+  system_not_in_live_mode: "System not in live mode",
+  live_disabled: "Live disabled",
+  trading_kill_switch_active: "Trading kill switch active",
+  kalshi_live_auth_or_order_fields_missing: "Kalshi auth or order fields missing",
+  kalshi_order_submission_failed: "Kalshi order submission failed",
+  mirror_attempt_not_recorded: "Mirror attempt not recorded yet",
+};
+
+const MIRROR_REJECT_BUCKETS: Record<string, string> = {
+  source_market_title_missing: "No equivalent market",
+  kalshi_open_market_not_found: "No equivalent market",
+  kalshi_no_equivalent_market: "No equivalent market",
+  kalshi_weak_semantic_match: "Weak semantic match",
+  kalshi_contract_settlement_mismatch: "Contract / settlement mismatch",
+  kalshi_market_not_tradable: "Market closed / not tradable",
+  kalshi_spread_too_wide: "Poor spread / weak liquidity",
+  kalshi_liquidity_too_thin: "Poor spread / weak liquidity",
+  kalshi_execution_disabled: "Auth / readiness issue",
+  system_not_in_live_mode: "Auth / readiness issue",
+  live_disabled: "Auth / readiness issue",
+  trading_kill_switch_active: "Risk rule rejection",
+  kalshi_live_auth_or_order_fields_missing: "Auth / readiness issue",
+  kalshi_order_submission_failed: "Auth / readiness issue",
+  mirror_attempt_not_recorded: "Auth / readiness issue",
+};
+
+const MIRROR_NEAR_MATCH_CODES = new Set([
+  "kalshi_weak_semantic_match",
+  "kalshi_contract_settlement_mismatch",
+  "kalshi_market_not_tradable",
+  "kalshi_spread_too_wide",
+  "kalshi_liquidity_too_thin",
+]);
+
+function humanizeCode(value: string | null | undefined): string {
+  if (!value) return "n/a";
+  return value
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function formatBasisPoints(value: number | null | undefined): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "n/a";
+  return `${Math.round(value)} bps`;
+}
+
+function formatConfidenceScore(value: number | null | undefined): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "n/a";
+  return `${Math.round(value * 100)}%`;
+}
+
+function shortenWalletAddress(value: string | null | undefined): string {
+  if (!value) return "n/a";
+  return value.length <= 14 ? value : `${value.slice(0, 6)}…${value.slice(-4)}`;
+}
+
+function toneForMatchClass(matchClass: MirrorAttemptMatchClass): "secondary" | "outline" | "destructive" {
+  if (matchClass === "matched") return "secondary";
+  if (matchClass === "near_match") return "outline";
+  return "destructive";
+}
+
+function labelForMatchClass(matchClass: MirrorAttemptMatchClass): string {
+  return matchClass === "near_match" ? "near match" : matchClass;
+}
+
+function formatTradabilityState(value: string | null | undefined): string {
+  if (value === "tradable") return "Tradable";
+  if (value === "open_unquoted") return "Open, but unquoted";
+  if (value === "closed") return "Closed";
+  return value ? humanizeCode(value) : "n/a";
+}
+
+function mirrorRejectReasonLabel(reasonCode: string | null | undefined): string {
+  if (!reasonCode) return "Matched";
+  return MIRROR_REJECT_REASON_LABELS[reasonCode] ?? humanizeCode(reasonCode);
+}
+
+function mirrorRejectBucket(reasonCode: string | null | undefined): string | null {
+  if (!reasonCode) return null;
+  return MIRROR_REJECT_BUCKETS[reasonCode] ?? null;
+}
+
+function determineMirrorMatchClass(options: {
+  reasonCode: string | null;
+  confidence: number | null;
+  candidateTitle: string | null;
+  order: PolymarketCopyDashboardData["kalshiMirrorOrders"][number] | null;
+  decision: PolymarketCopyDashboardData["signals"][number]["decision"] | null;
+}): MirrorAttemptMatchClass {
+  const { reasonCode, confidence, candidateTitle, order, decision } = options;
+  if (order?.matchStatus === "matched" && order.executionStatus !== "match_rejected") {
+    return "matched";
+  }
+  if (decision?.decision === "blocked" || decision?.decision === "skipped") {
+    return "rejected";
+  }
+  if (reasonCode && MIRROR_NEAR_MATCH_CODES.has(reasonCode) && candidateTitle) {
+    return "near_match";
+  }
+  if (candidateTitle && typeof confidence === "number" && confidence >= 0.56) {
+    return "near_match";
+  }
+  return "rejected";
+}
+
+function averageNumber(values: Array<number | null | undefined>): number | null {
+  const filtered = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  if (filtered.length === 0) return null;
+  return filtered.reduce((sum, value) => sum + value, 0) / filtered.length;
+}
+
+function buildCountBars(labels: Array<string | null | undefined>, limit = 6): Array<{ label: string; valueUsd: number }> {
+  const counts = new Map<string, number>();
+  for (const label of labels) {
+    if (!label) continue;
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, limit)
+    .map(([label, count]) => ({ label, valueUsd: count }));
+}
+
+function buildMirrorOutcomeTimeline(rows: MirrorAttemptDiagnostic[]): Array<{ label: string; matched: number; near: number; rejected: number }> {
+  const buckets = new Map<number, { label: string; matched: number; near: number; rejected: number }>();
+  for (const row of rows) {
+    const date = row.timestamp instanceof Date ? row.timestamp : new Date(row.timestamp);
+    if (Number.isNaN(date.getTime())) continue;
+    const bucketStart = new Date(date);
+    bucketStart.setMinutes(0, 0, 0);
+    const key = bucketStart.getTime();
+    const entry = buckets.get(key) ?? {
+      label: bucketStart.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric" }),
+      matched: 0,
+      near: 0,
+      rejected: 0,
+    };
+    if (row.matchClass === "matched") entry.matched += 1;
+    else if (row.matchClass === "near_match") entry.near += 1;
+    else entry.rejected += 1;
+    buckets.set(key, entry);
+  }
+  return [...buckets.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .slice(-8)
+    .map(([, value]) => value);
+}
+
+function buildMirrorAttemptDiagnostics(data: PolymarketCopyDashboardData): MirrorAttemptDiagnostic[] {
+  const mirrorOrdersBySignalId = new Map(data.kalshiMirrorOrders.map((order) => [order.signalId, order] as const));
+
+  return [...data.signals]
+    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
+    .map((signal) => {
+      const order = mirrorOrdersBySignalId.get(signal.id) ?? null;
+      const orderMetadata = asRecord(order?.metadata);
+      const matchMetadata = asRecord(orderMetadata.match);
+      const simulatedOrder = asRecord(orderMetadata.simulatedOrder);
+      const derivedCandidateParts = [
+        asString(matchMetadata.eventTitle),
+        asString(matchMetadata.chosenSideLabel),
+      ].filter((value): value is string => Boolean(value));
+      const derivedCandidateTitle = derivedCandidateParts.length > 0
+        ? derivedCandidateParts.join(" • ")
+        : null;
+      const candidateTitle = order?.kalshiMarketTitle
+        ?? derivedCandidateTitle
+        ?? asString(matchMetadata.marketTitle)
+        ?? null;
+      const reasonCode = order?.rejectionReason
+        ?? (signal.decision && signal.decision.decision !== "accepted" ? signal.decision.reasonCode : null)
+        ?? (signal.decision?.decision === "accepted" && !order ? "mirror_attempt_not_recorded" : null);
+      const rejectDetail = asString(orderMetadata.rejectionDetail)
+        ?? asString(orderMetadata.error)
+        ?? signal.decision?.reasonDetail
+        ?? (reasonCode === "mirror_attempt_not_recorded"
+          ? "The signal reached the accepted path, but a mirror-attempt record has not been persisted yet."
+          : null);
+      const confidence = typeof order?.matchConfidence === "number" ? order.matchConfidence : null;
+      const matchClass = determineMirrorMatchClass({
+        reasonCode,
+        confidence,
+        candidateTitle,
+        order,
+        decision: signal.decision ?? null,
+      });
+
+      return {
+        id: signal.id,
+        timestamp: signal.createdAt,
+        sourceWallet: signal.sourceWalletAddress,
+        sourceWalletShort: shortenWalletAddress(signal.sourceWalletAddress),
+        sourceMarket: signal.marketTitle || signal.marketId,
+        sourceMarketDetail: signal.marketSlug || signal.marketId,
+        sourceSide: signal.side,
+        sourceAction: signal.action,
+        cadence: signal.cadence,
+        bestCandidate: candidateTitle,
+        closestCandidate: candidateTitle,
+        candidateTicker: order?.kalshiMarketTicker ?? asString(matchMetadata.candidateMarketTicker),
+        matchConfidence: confidence,
+        matchClass,
+        rejectReasonCode: reasonCode,
+        rejectReasonLabel: mirrorRejectReasonLabel(reasonCode),
+        rejectBucket: signal.decision && signal.decision.decision !== "accepted"
+          ? "Risk rule rejection"
+          : mirrorRejectBucket(reasonCode),
+        rejectDetail,
+        tradabilityState: asString(matchMetadata.tradabilityState) ?? (reasonCode === "kalshi_market_not_tradable" ? "closed" : null),
+        spreadBps: asNumber(matchMetadata.spreadBps),
+        liquidityUsd: asNumber(matchMetadata.notionalLiquidityUsd),
+        simulatedOrderSizeUsd: order?.notionalUsd ?? asNumber(simulatedOrder.notionalUsd),
+        simulatedFillPrice: order?.limitPriceDollars ?? asNumber(simulatedOrder.limitPriceDollars),
+      };
+    });
+}
+
 
 function walletSelectionSnapshot(metadata: Record<string, unknown> | null | undefined) {
   const snapshot = asRecord(asRecord(metadata).snapshot);
@@ -709,6 +990,13 @@ function PerformanceView({ data }: { data: PolymarketCopyDashboardData }) {
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <PerformanceMetricCard label="Kalshi Wallet Balance" value={formatUsdOrUnavailable(data.kalshiReadiness.walletBalanceUsd)} description={data.kalshiReadiness.balancesReachable ? "Authenticated Kalshi primary-account balance fetched successfully." : `Balance access: ${formatKalshiBalanceState(data.kalshiReadiness)}`} />
+        <PerformanceMetricCard label="Kalshi Portfolio Value" value={formatUsdOrUnavailable(data.kalshiReadiness.portfolioValueUsd)} description={data.kalshiReadiness.balanceErrorDetail ?? "Venue-reported portfolio value when available from the authenticated balance endpoint."} />
+        <PerformanceMetricCard label="Last Balance Sync" value={formatDate(data.kalshiReadiness.lastSuccessfulBalanceSyncAt)} description="Latest successful authenticated Kalshi balance read inside the current desk session." />
+        <PerformanceMetricCard label="Kalshi Balance Source" value={formatKalshiBalanceSource(data.kalshiReadiness.balanceSource)} description="Which authenticated Kalshi balance scope the desk is reading right now." />
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <PerformanceMetricCard label="Source Signals" value={performance.sourceSignalCount} description="Polymarket source-wallet signals observed inside the current paper baseline window." />
         <PerformanceMetricCard label="Kalshi Matches" value={performance.kalshiMatchCount} description="Signals that found a sufficiently equivalent Kalshi market for mirroring." />
         <PerformanceMetricCard label="Rejected Matches" value={performance.kalshiRejectedMatchCount} description="Signals rejected because the Kalshi translation, spread, or liquidity quality was not good enough." />
@@ -891,6 +1179,199 @@ function PerformanceView({ data }: { data: PolymarketCopyDashboardData }) {
     </div>
   );
 }
+
+function AttemptOutcomeTimeline({
+  items,
+  empty,
+}: {
+  items: Array<{ label: string; matched: number; near: number; rejected: number }>;
+  empty: string;
+}) {
+  if (items.length === 0) {
+    return <div className="rounded-[18px] border border-dashed border-border/80 bg-muted/20 p-4 text-sm text-muted-foreground">{empty}</div>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {items.map((item) => {
+        const total = item.matched + item.near + item.rejected;
+        const matchedWidth = total > 0 ? (item.matched / total) * 100 : 0;
+        const nearWidth = total > 0 ? (item.near / total) * 100 : 0;
+        const rejectedWidth = total > 0 ? (item.rejected / total) * 100 : 0;
+
+        return (
+          <div key={item.label} className="space-y-1.5">
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <span className="truncate text-foreground">{item.label}</span>
+              <span className="text-muted-foreground">{total} attempts</span>
+            </div>
+            <div className="flex h-2.5 overflow-hidden rounded-full bg-muted/55">
+              {matchedWidth > 0 && <div className="bg-[#3d9463]" style={{ width: `${matchedWidth}%` }} />}
+              {nearWidth > 0 && <div className="bg-[#d6a93a]" style={{ width: `${nearWidth}%` }} />}
+              {rejectedWidth > 0 && <div className="bg-[#d86b5f]" style={{ width: `${rejectedWidth}%` }} />}
+            </div>
+            <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+              <span>Matched {item.matched}</span>
+              <span>Near {item.near}</span>
+              <span>Rejected {item.rejected}</span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MirrorAttemptsView({ data }: { data: PolymarketCopyDashboardData }) {
+  const diagnostics = useMemo(() => buildMirrorAttemptDiagnostics(data), [data]);
+  const matchedRows = diagnostics.filter((row) => row.matchClass === "matched");
+  const nearRows = diagnostics.filter((row) => row.matchClass === "near_match");
+  const rejectedRows = diagnostics.filter((row) => row.matchClass === "rejected");
+  const matchRatePct = diagnostics.length > 0 ? (matchedRows.length / diagnostics.length) * 100 : 0;
+  const avgMatchScore = averageNumber(diagnostics.map((row) => row.matchConfidence));
+  const avgMatchedSpreadBps = averageNumber(matchedRows.map((row) => row.spreadBps));
+  const rejectionReasonBars = buildCountBars(rejectedRows.map((row) => row.rejectBucket ?? row.rejectReasonLabel));
+  const walletMatchBars = buildCountBars(matchedRows.map((row) => row.sourceWalletShort));
+  const botMatchBars = buildCountBars(matchedRows.map((row) => `${row.cadence} Copy Bot`));
+  const candidateAttemptBars = buildCountBars(diagnostics.map((row) => row.bestCandidate ?? row.closestCandidate));
+  const outcomeTimeline = buildMirrorOutcomeTimeline(diagnostics);
+  const topRejectReason = rejectionReasonBars[0]
+    ? `${rejectionReasonBars[0].label} (${Math.round(rejectionReasonBars[0].valueUsd)})`
+    : "n/a";
+  const topSourceWallet = walletMatchBars[0]
+    ? `${walletMatchBars[0].label} (${Math.round(walletMatchBars[0].valueUsd)})`
+    : "n/a";
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
+        <PerformanceMetricCard label="Source Signals" value={diagnostics.length} description="Recent Polymarket source signals reviewed for high-confidence Kalshi mirror translation." />
+        <PerformanceMetricCard label="Kalshi Matches" value={matchedRows.length} description="Signals with a sufficiently equivalent Kalshi market and simulated dry-run order path." />
+        <PerformanceMetricCard label="Near Matches" value={nearRows.length} description="Signals that found a close Kalshi candidate, but not one strong enough to mirror safely yet." />
+        <PerformanceMetricCard label="Rejected Matches" value={rejectedRows.length} description="Signals rejected because equivalence, tradability, readiness, or risk conditions were not good enough." />
+        <PerformanceMetricCard label="Match Rate %" value={formatPercent(matchRatePct)} description="Share of recent source signals that produced a high-confidence Kalshi match." />
+        <PerformanceMetricCard label="Avg Match Score" value={formatConfidenceScore(avgMatchScore)} description="Average translation confidence across recent source-signal diagnostics." />
+        <PerformanceMetricCard label="Avg Spread on Matched Signals" value={formatBasisPoints(avgMatchedSpreadBps)} description="Average Kalshi side spread on signals that actually matched." />
+        <PerformanceMetricCard label="Top Reject Reason" value={topRejectReason} description="Most common reason recent mirror attempts did not clear the match gate." />
+        <PerformanceMetricCard label="Top Source Wallets by Match Count" value={topSourceWallet} description="Most frequently matched recent source wallet in the mirror diagnostics window." />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card className={DESK_SURFACE_CLASS}>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Rejection Reasons Breakdown</CardTitle>
+            <CardDescription>Why recent source-led mirror attempts were rejected or held back.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PerformanceBarList
+              items={rejectionReasonBars}
+              empty="No rejected or risk-held mirror attempts yet in the current diagnostics window."
+              valueFormatter={(value) => `${Math.round(value)} attempts`}
+            />
+          </CardContent>
+        </Card>
+
+        <Card className={DESK_SURFACE_CLASS}>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Matched vs Near vs Rejected Over Time</CardTitle>
+            <CardDescription>Recent mirror-attempt outcomes bucketed by hour for operator scanning.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <AttemptOutcomeTimeline items={outcomeTimeline} empty="No mirror-attempt outcome timeline is available yet." />
+          </CardContent>
+        </Card>
+
+        <Card className={DESK_SURFACE_CLASS}>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Match Count by Source Wallet</CardTitle>
+            <CardDescription>Which watched wallets are producing the most usable Kalshi mirror opportunities.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PerformanceBarList
+              items={walletMatchBars}
+              empty="No matched source wallets yet in the current diagnostics window."
+              valueFormatter={(value) => `${Math.round(value)} matches`}
+            />
+          </CardContent>
+        </Card>
+
+        <Card className={DESK_SURFACE_CLASS}>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Match Count by Bot</CardTitle>
+            <CardDescription>Compare usable mirror opportunities coming from the 5m and 15m copy bots.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PerformanceBarList
+              items={botMatchBars}
+              empty="No matched mirror opportunities by bot yet."
+              valueFormatter={(value) => `${Math.round(value)} matches`}
+            />
+          </CardContent>
+        </Card>
+
+        <Card className="xl:col-span-2 rounded-[24px] border border-border/80 bg-white py-0 shadow-[0_18px_40px_rgba(15,23,42,0.05)]">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Top Kalshi Candidate Markets by Attempt Count</CardTitle>
+            <CardDescription>Which Kalshi markets are being considered most often by the source-led mirror pipeline.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PerformanceBarList
+              items={candidateAttemptBars}
+              empty="No Kalshi candidate markets have been considered yet."
+              valueFormatter={(value) => `${Math.round(value)} attempts`}
+            />
+          </CardContent>
+        </Card>
+      </div>
+
+      <SectionTable
+        empty="No source signals are available yet for mirror diagnostics."
+        headers={["Time", "Source Wallet", "Source Market / Side", "Bot", "Best Kalshi Candidate", "Match", "Reject Reason / Why", "Tradability / Liquidity", "Simulated Order"]}
+        rows={diagnostics.map((attempt) => [
+          formatDate(attempt.timestamp),
+          <div key="wallet" className="space-y-1">
+            <div className="font-mono text-xs">{attempt.sourceWallet}</div>
+            <div className="text-xs text-muted-foreground">{attempt.sourceWalletShort}</div>
+          </div>,
+          <div key="source-market" className="space-y-1">
+            <div>{attempt.sourceMarket}</div>
+            <div className="text-xs text-muted-foreground">{attempt.sourceMarketDetail ?? "No extra market slug"}</div>
+            <div className="text-xs text-muted-foreground">Side: {attempt.sourceSide ?? "n/a"} • {humanizeCode(attempt.sourceAction)}</div>
+          </div>,
+          <div key="cadence" className="space-y-1">
+            <div className="font-medium">{attempt.cadence} Copy Bot</div>
+            <div className="text-xs text-muted-foreground">Originating bot</div>
+          </div>,
+          <div key="candidate" className="space-y-1">
+            <div>{attempt.bestCandidate ?? "No acceptable Kalshi candidate"}</div>
+            <div className="text-xs text-muted-foreground">Closest candidate: {attempt.closestCandidate ?? "none"}</div>
+            <div className="text-xs text-muted-foreground">Ticker: {attempt.candidateTicker ?? "n/a"}</div>
+          </div>,
+          <div key="match" className="space-y-1">
+            <Badge variant={toneForMatchClass(attempt.matchClass)}>{labelForMatchClass(attempt.matchClass)}</Badge>
+            <div className="text-xs text-muted-foreground">Score {formatConfidenceScore(attempt.matchConfidence)}</div>
+          </div>,
+          <div key="reject" className="space-y-1">
+            <div className="font-medium text-foreground">{attempt.rejectReasonLabel}</div>
+            <div className="text-xs uppercase tracking-[0.14em] text-muted-foreground">{attempt.rejectBucket ?? "Matched"}</div>
+            <div className="text-xs leading-5 text-muted-foreground">{attempt.rejectDetail ?? "High-confidence equivalent Kalshi market found."}</div>
+          </div>,
+          <div key="venue" className="space-y-1 text-xs text-muted-foreground">
+            <div>Tradability: {formatTradabilityState(attempt.tradabilityState)}</div>
+            <div>Spread: {formatBasisPoints(attempt.spreadBps)}</div>
+            <div>Liquidity: {attempt.liquidityUsd == null ? "n/a" : formatUsd(attempt.liquidityUsd)}</div>
+          </div>,
+          <div key="sim-order" className="space-y-1 text-xs text-muted-foreground">
+            <div>Size: {attempt.simulatedOrderSizeUsd == null ? "n/a" : formatUsd(attempt.simulatedOrderSizeUsd)}</div>
+            <div>Fill / price: {attempt.simulatedFillPrice == null ? "n/a" : `$${attempt.simulatedFillPrice.toFixed(3)}`}</div>
+            <div>Timestamp: {formatDate(attempt.timestamp)}</div>
+          </div>,
+        ])}
+      />
+    </div>
+  );
+}
+
 
 function SectionTable({
   empty,
@@ -1096,6 +1577,36 @@ function AuthReadinessPanel(props: {
               </div>
               <div className={`${INSET_SURFACE_CLASS} p-3 text-sm leading-6 text-muted-foreground`}>
                 {readiness.summary}
+              </div>
+              <div className={`${INSET_SURFACE_CLASS} p-3 text-sm`}>
+                <div className="font-medium text-foreground">Kalshi balance check</div>
+                <div className="mt-3 space-y-2">
+                  <div className="flex items-center justify-between gap-4">
+                    <span>Balance access</span>
+                    <Badge variant={formatKalshiBalanceStateVariant(props.data.kalshiReadiness)}>
+                      {formatKalshiBalanceState(props.data.kalshiReadiness)}
+                    </Badge>
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <span>Kalshi wallet balance</span>
+                    <span className="text-right font-medium">{formatUsdOrUnavailable(props.data.kalshiReadiness.walletBalanceUsd)}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <span>Kalshi portfolio value</span>
+                    <span className="text-right font-medium">{formatUsdOrUnavailable(props.data.kalshiReadiness.portfolioValueUsd)}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <span>Balance source</span>
+                    <span className="text-right font-medium">{formatKalshiBalanceSource(props.data.kalshiReadiness.balanceSource)}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <span>Last successful balance sync</span>
+                    <span className="text-right font-medium">{formatDate(props.data.kalshiReadiness.lastSuccessfulBalanceSyncAt)}</span>
+                  </div>
+                </div>
+                {props.data.kalshiReadiness.balanceErrorDetail && !props.data.kalshiReadiness.balancesReachable && (
+                  <div className="mt-3 text-xs leading-5 text-muted-foreground">{props.data.kalshiReadiness.balanceErrorDetail}</div>
+                )}
               </div>
               {readiness.reasonCodes.length > 0 && (
                 <div className="flex flex-wrap gap-2">
@@ -2102,6 +2613,15 @@ export function PolymarketCopy() {
               </DeskSection>
 
               <DeskSection
+                active={activeSection.id === "mirror-attempts"}
+                id="mirror-attempts"
+                title="Mirror Attempts / Match Diagnostics"
+                description="Recent Polymarket source signals, their best Kalshi candidates, and exactly why each one matched, nearly matched, or was rejected."
+              >
+                <MirrorAttemptsView data={data} />
+              </DeskSection>
+
+              <DeskSection
                 active={activeSection.id === "paper-trades"}
                 id="paper-trades"
                 title="Paper Trades"
@@ -2248,6 +2768,16 @@ export function PolymarketCopy() {
                       </div>
                       <div className={`${INSET_SURFACE_CLASS} p-3 text-muted-foreground`}>
                         {data.kalshiReadiness.summary}
+                      </div>
+                      <div className="rounded-[18px] border border-border/80 bg-white p-3">
+                        <div className="flex items-center justify-between gap-4"><span>Balance access</span><Badge variant={formatKalshiBalanceStateVariant(data.kalshiReadiness)}>{formatKalshiBalanceState(data.kalshiReadiness)}</Badge></div>
+                        <div className="mt-3 flex items-center justify-between gap-4"><span>Kalshi wallet balance</span><span className="font-medium">{formatUsdOrUnavailable(data.kalshiReadiness.walletBalanceUsd)}</span></div>
+                        <div className="mt-2 flex items-center justify-between gap-4"><span>Kalshi portfolio value</span><span className="font-medium">{formatUsdOrUnavailable(data.kalshiReadiness.portfolioValueUsd)}</span></div>
+                        <div className="mt-2 flex items-center justify-between gap-4"><span>Balance source</span><span className="font-medium">{formatKalshiBalanceSource(data.kalshiReadiness.balanceSource)}</span></div>
+                        <div className="mt-2 flex items-center justify-between gap-4"><span>Last successful balance sync</span><span className="font-medium">{formatDate(data.kalshiReadiness.lastSuccessfulBalanceSyncAt)}</span></div>
+                        {data.kalshiReadiness.balanceErrorDetail && !data.kalshiReadiness.balancesReachable && (
+                          <div className="mt-3 text-xs leading-5 text-muted-foreground">{data.kalshiReadiness.balanceErrorDetail}</div>
+                        )}
                       </div>
                       <div className="flex items-center justify-between gap-4"><span>Execution mode</span><span className="font-medium">{data.kalshiReadiness.executionMode}</span></div>
                       <div className="flex items-center justify-between gap-4"><span>Signal source active</span><span className="font-medium">{String(data.kalshiReadiness.signalSourceActive)}</span></div>

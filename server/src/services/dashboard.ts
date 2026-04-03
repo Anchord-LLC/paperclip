@@ -1,13 +1,20 @@
 import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, issues } from "@paperclipai/db";
+import type { DashboardSummary } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
+
+const DASHBOARD_CACHE_TTL_MS = 10_000;
+const dashboardSummaryCache = new Map<string, { expiresAt: number; value: DashboardSummary }>();
 
 export function dashboardService(db: Db) {
   const budgets = budgetService(db);
   return {
     summary: async (companyId: string) => {
+      const nowMs = Date.now();
+      const cached = dashboardSummaryCache.get(companyId);
+      if (cached && cached.expiresAt > nowMs) return cached.value;
       const company = await db
         .select()
         .from(companies)
@@ -34,7 +41,7 @@ export function dashboardService(db: Db) {
         .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
         .then((rows) => Number(rows[0]?.count ?? 0));
 
-      const agentCounts: Record<string, number> = {
+      const agentCounts: { active: number; running: number; paused: number; error: number } = {
         active: 0,
         running: 0,
         paused: 0,
@@ -43,11 +50,20 @@ export function dashboardService(db: Db) {
       for (const row of agentRows) {
         const count = Number(row.count);
         // "idle" agents are operational — count them as active
-        const bucket = row.status === "idle" ? "active" : row.status;
-        agentCounts[bucket] = (agentCounts[bucket] ?? 0) + count;
+        const bucket: keyof typeof agentCounts =
+          row.status === "idle"
+            ? "active"
+            : row.status === "running"
+              ? "running"
+              : row.status === "paused"
+                ? "paused"
+                : row.status === "error"
+                  ? "error"
+                  : "active";
+        agentCounts[bucket] += count;
       }
 
-      const taskCounts: Record<string, number> = {
+      const taskCounts: { open: number; inProgress: number; blocked: number; done: number } = {
         open: 0,
         inProgress: 0,
         blocked: 0,
@@ -82,7 +98,7 @@ export function dashboardService(db: Db) {
           : 0;
       const budgetOverview = await budgets.overview(companyId);
 
-      return {
+      const summary: DashboardSummary = {
         companyId,
         agents: {
           active: agentCounts.active,
@@ -104,6 +120,13 @@ export function dashboardService(db: Db) {
           pausedProjects: budgetOverview.pausedProjectCount,
         },
       };
+
+      dashboardSummaryCache.set(companyId, {
+        expiresAt: nowMs + DASHBOARD_CACHE_TTL_MS,
+        value: summary,
+      });
+
+      return summary;
     },
   };
 }

@@ -4,11 +4,16 @@ import type {
   AgentEnvConfig,
   PolymarketCopyAuthKeyStatus,
   PolymarketCopyKalshiReadiness,
+  PolymarketCopyKalshiReadinessErrorClass,
   PolymarketCopyRuntimeConfig,
   PolymarketKalshiEnvKey,
 } from "@paperclipai/shared";
 import { secretService } from "../secrets.js";
-import { createKalshiClient, type KalshiCredentials } from "./kalshi-client.js";
+import {
+  createKalshiClient,
+  isKalshiRequestError,
+  type KalshiCredentials,
+} from "./kalshi-client.js";
 import { KALSHI_AUTH_ENV_KEYS } from "./shared.js";
 
 const MISSING_REASON_BY_KEY: Record<PolymarketKalshiEnvKey, string> = {
@@ -37,6 +42,42 @@ const INVALID_VALUE_REASON_BY_KEY: Record<PolymarketKalshiEnvKey, string> = {
 };
 
 let readinessCache = new Map<string, { expiresAt: number; value: PolymarketCopyKalshiReadiness }>();
+
+function classifyBalanceProbeFailure(error: unknown): {
+  errorClass: PolymarketCopyKalshiReadinessErrorClass;
+  reasonCode: string;
+  detail: string | null;
+} {
+  if (isKalshiRequestError(error)) {
+    const detail = error.responseBodySnippet ?? error.message;
+    const lowered = detail.toLowerCase();
+
+    if (error.kind === "network_error") {
+      return { errorClass: "network_api_failure", reasonCode: "kalshi_balance_network_api_failure", detail };
+    }
+
+    if (error.kind === "malformed_response") {
+      return { errorClass: "malformed_response", reasonCode: "kalshi_balance_malformed_response", detail };
+    }
+
+    if ((error.status === 400 || error.status === 401 || error.status === 403) && lowered.includes("signature")) {
+      return { errorClass: "signature_failure", reasonCode: "kalshi_balance_signature_failure", detail };
+    }
+
+    if (error.status === 401 || error.status === 403) {
+      return { errorClass: "auth_failure", reasonCode: "kalshi_balance_auth_failure", detail };
+    }
+
+    if (error.status === 404 && lowered.includes("subaccount")) {
+      return { errorClass: "missing_subaccount", reasonCode: "kalshi_balance_missing_subaccount", detail };
+    }
+
+    return { errorClass: "network_api_failure", reasonCode: "kalshi_balance_api_failure", detail };
+  }
+
+  const detail = error instanceof Error ? error.message : String(error);
+  return { errorClass: "network_api_failure", reasonCode: "kalshi_balance_api_failure", detail };
+}
 
 type SecretRefBinding = {
   type: "secret_ref";
@@ -152,6 +193,12 @@ export async function inspectKalshiReadiness(options: {
   let marketDataReachable = false;
   let balancesReachable = false;
   let positionsReachable = false;
+  let walletBalanceUsd: number | null = null;
+  let portfolioValueUsd: number | null = null;
+  let lastSuccessfulBalanceSyncAt: Date | null = null;
+  let balanceSource: PolymarketCopyKalshiReadiness["balanceSource"] = credentials ? "primary_account" : null;
+  let balanceErrorClass: PolymarketCopyKalshiReadinessErrorClass | null = null;
+  let balanceErrorDetail: string | null = null;
 
   try {
     const marketProbe = await client.getMarkets({ status: "open", limit: 1 });
@@ -162,9 +209,17 @@ export async function inspectKalshiReadiness(options: {
 
   if (credentials) {
     try {
-      await client.getBalance(credentials);
+      const balance = await client.getBalance(credentials);
       balancesReachable = true;
-    } catch {
+      walletBalanceUsd = balance.balanceUsd;
+      portfolioValueUsd = balance.portfolioValueUsd;
+      lastSuccessfulBalanceSyncAt = checkedAt;
+      balanceSource = "primary_account";
+    } catch (error) {
+      const classified = classifyBalanceProbeFailure(error);
+      balanceErrorClass = classified.errorClass;
+      balanceErrorDetail = classified.detail;
+      reasonCodes.push(classified.reasonCode);
       reasonCodes.push("kalshi_balance_unreachable");
     }
 
@@ -188,12 +243,20 @@ export async function inspectKalshiReadiness(options: {
     positionsReachable,
     signalSourceActive: options.signalSourceActive,
     marketMatchQualityAvailable: marketDataReachable,
+    walletBalanceUsd,
+    portfolioValueUsd,
+    lastSuccessfulBalanceSyncAt,
+    balanceSource,
+    balanceErrorClass,
+    balanceErrorDetail,
     keyStatuses,
     reasonCodes: dedupedReasonCodes,
     summary: authConfigured
-      ? marketDataReachable
-        ? "Kalshi adapter is configured for the current company secret refs. Dry-run mirroring can use official Kalshi market data without exposing key material."
-        : "Kalshi secret refs are configured, but market data could not be reached during the latest readiness probe."
+      ? balancesReachable
+        ? "Kalshi adapter is configured and can read the authenticated account balance for the bound company secret refs while dry-run mirroring stays enabled."
+        : marketDataReachable
+          ? "Kalshi secret refs are configured, but the authenticated balance probe did not succeed during the latest readiness check."
+          : "Kalshi secret refs are configured, but market data could not be reached during the latest readiness probe."
       : "Kalshi secret refs are incomplete. Bind KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY through the existing company secret flow before live venue readiness can complete.",
   };
 

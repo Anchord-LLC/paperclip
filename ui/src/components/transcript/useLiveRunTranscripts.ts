@@ -3,11 +3,15 @@ import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { heartbeatsApi, type LiveRunForIssue } from "../../api/heartbeats";
+import { ApiError } from "../../api/client";
 import { buildTranscript, getUIAdapter, type RunLogChunk, type TranscriptEntry } from "../../adapters";
 import { queryKeys } from "../../lib/queryKeys";
 
-const LOG_POLL_INTERVAL_MS = 2000;
+const LOG_POLL_INTERVAL_MS = 5_000;
 const LOG_READ_LIMIT_BYTES = 256_000;
+const LOG_READ_CONCURRENCY = 2;
+const NO_LOG_RETRY_ACTIVE_MS = 15_000;
+const NO_LOG_RETRY_TERMINAL_MS = 60_000;
 
 interface UseLiveRunTranscriptsOptions {
   runs: LiveRunForIssue[];
@@ -68,6 +72,7 @@ export function useLiveRunTranscripts({
   const seenChunkKeysRef = useRef(new Set<string>());
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
+  const missingLogRetryAtRef = useRef(new Map<string, number>());
   const { data: generalSettings } = useQuery({
     queryKey: queryKeys.instance.generalSettings,
     queryFn: () => instanceSettingsApi.getGeneral(),
@@ -129,6 +134,11 @@ export function useLiveRunTranscripts({
         logOffsetByRunRef.current.delete(runId);
       }
     }
+    for (const runId of missingLogRetryAtRef.current.keys()) {
+      if (!knownRunIds.has(runId)) {
+        missingLogRetryAtRef.current.delete(runId);
+      }
+    }
   }, [runs]);
 
   useEffect(() => {
@@ -136,12 +146,20 @@ export function useLiveRunTranscripts({
 
     let cancelled = false;
 
+    const shouldReadRun = (run: LiveRunForIssue) => {
+      const retryAt = missingLogRetryAtRef.current.get(run.id) ?? 0;
+      return Date.now() >= retryAt;
+    };
+
     const readRunLog = async (run: LiveRunForIssue) => {
+      if (!shouldReadRun(run)) return;
+
       const offset = logOffsetByRunRef.current.get(run.id) ?? 0;
       try {
         const result = await heartbeatsApi.log(run.id, offset, LOG_READ_LIMIT_BYTES);
         if (cancelled) return;
 
+        missingLogRetryAtRef.current.delete(run.id);
         appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));
 
         if (result.nextOffset !== undefined) {
@@ -151,18 +169,37 @@ export function useLiveRunTranscripts({
         if (result.content.length > 0) {
           logOffsetByRunRef.current.set(run.id, offset + result.content.length);
         }
-      } catch {
-        // Ignore log read errors while output is initializing.
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) {
+          missingLogRetryAtRef.current.set(
+            run.id,
+            Date.now() + (isTerminalStatus(run.status) ? NO_LOG_RETRY_TERMINAL_MS : NO_LOG_RETRY_ACTIVE_MS),
+          );
+          return;
+        }
+        // Ignore transient log read errors while output is initializing.
       }
     };
 
-    const readAll = async () => {
-      await Promise.all(runs.map((run) => readRunLog(run)));
+    const readRuns = async (sourceRuns: LiveRunForIssue[]) => {
+      const targetRuns = sourceRuns.filter((run) => shouldReadRun(run));
+      for (let index = 0; index < targetRuns.length; index += LOG_READ_CONCURRENCY) {
+        const batch = targetRuns.slice(index, index + LOG_READ_CONCURRENCY);
+        await Promise.all(batch.map((run) => readRunLog(run)));
+        if (cancelled) return;
+      }
     };
 
-    void readAll();
+    void readRuns(runs);
+    const intervalRuns = runs.filter((run) => !isTerminalStatus(run.status));
+    if (intervalRuns.length === 0) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
     const interval = window.setInterval(() => {
-      void readAll();
+      void readRuns(intervalRuns);
     }, LOG_POLL_INTERVAL_MS);
 
     return () => {

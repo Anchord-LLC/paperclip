@@ -262,6 +262,8 @@ export type {
   PolymarketCopyPaperTradeStatus,
   PolymarketCopyDynamicSizingBasis,
   PolymarketCopyKalshiExecutionMode,
+  PolymarketCopyKalshiBalanceSource,
+  PolymarketCopyKalshiReadinessErrorClass,
   PolymarketAuthEnvKey,
   PolymarketKalshiEnvKey,
   PolymarketCopySecretEnvKey,

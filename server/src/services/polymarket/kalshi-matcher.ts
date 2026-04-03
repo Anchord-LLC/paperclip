@@ -62,7 +62,7 @@ function chosenSide(signal: PolymarketCopySignal, market: KalshiMarket) {
   const yesScore = diceCoefficient(sourceTokens, asTokens(market.yesSubTitle));
   const noScore = diceCoefficient(sourceTokens, asTokens(market.noSubTitle));
   if (yesScore === 0 && noScore === 0) {
-    return { side: "yes" as const, score: 0.5 };
+    return { side: "yes" as const, score: rawSide.length > 0 ? 0.2 : 0.45 };
   }
   return yesScore >= noScore
     ? { side: "yes" as const, score: yesScore }
@@ -80,6 +80,12 @@ function spreadBps(bid: number | null, ask: number | null): number | null {
   const midpoint = (bid + ask) / 2;
   if (midpoint <= 0) return null;
   return ((ask - bid) / midpoint) * 10_000;
+}
+
+function tradabilityState(market: KalshiMarket, priceDollars: number | null): string {
+  if (market.status !== "open") return "closed";
+  if (priceDollars == null || priceDollars <= 0) return "open_unquoted";
+  return "tradable";
 }
 
 async function loadOpenEvents(baseUrl: string) {
@@ -185,6 +191,12 @@ export async function matchPolymarketSignalToKalshi(options: {
           sideScore: sideResolution.score,
           liquidityScore,
           category: event.category,
+          marketStatus: market.status,
+          tradabilityState: tradabilityState(market, price ?? market.lastPriceDollars),
+          spreadBps: spread,
+          notionalLiquidityUsd: liquidity,
+          candidateMarketTicker: market.ticker,
+          candidateEventTicker: event.eventTicker,
         },
         questionScore,
         sideScore: sideResolution.score,
@@ -213,20 +225,36 @@ export async function matchPolymarketSignalToKalshi(options: {
     };
   }
 
+  if (best.questionScore < 0.3) {
+    return {
+      ...best,
+      status: "rejected",
+      reasonCode: "kalshi_no_equivalent_market",
+      reasonDetail: "No high-confidence equivalent Kalshi event was found for the Polymarket source thesis.",
+    };
+  }
+  if (best.sideScore < 0.45) {
+    return {
+      ...best,
+      status: "rejected",
+      reasonCode: "kalshi_contract_settlement_mismatch",
+      reasonDetail: "The closest Kalshi candidate did not preserve the same side or settlement meaning strongly enough to mirror safely.",
+    };
+  }
   if (best.questionScore < 0.42 || best.confidence < 0.56) {
     return {
       ...best,
       status: "rejected",
-      reasonCode: "kalshi_match_confidence_too_low",
-      reasonDetail: "No sufficiently equivalent Kalshi contract meaning was found for the Polymarket source signal.",
+      reasonCode: "kalshi_weak_semantic_match",
+      reasonDetail: "A nearby Kalshi market was found, but the semantic equivalence was not strong enough for a high-confidence mirror.",
     };
   }
   if (best.priceDollars == null || best.priceDollars <= 0) {
     return {
       ...best,
       status: "rejected",
-      reasonCode: "kalshi_price_unavailable",
-      reasonDetail: "Matched Kalshi market did not expose a tradable price for the mirrored side.",
+      reasonCode: "kalshi_market_not_tradable",
+      reasonDetail: "The closest Kalshi candidate was not currently tradable on the mirrored side.",
     };
   }
   if (best.spreadBps != null && best.spreadBps > runtimeConfig.maxSpreadBps) {

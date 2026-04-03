@@ -19,6 +19,15 @@ export interface LocalAgentJwtClaims {
 
 const JWT_ALGORITHM = "HS256";
 
+function firstNonEmptyTrimmedValue(...values: Array<string | undefined>) {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed) return trimmed;
+  }
+  return null;
+}
+
 function parseNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
@@ -26,7 +35,10 @@ function parseNumber(value: string | undefined, fallback: number) {
 }
 
 function jwtConfig() {
-  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  const secret = firstNonEmptyTrimmedValue(
+    process.env.PAPERCLIP_AGENT_JWT_SECRET,
+    process.env.BETTER_AUTH_SECRET,
+  );
   if (!secret) return null;
 
   return {

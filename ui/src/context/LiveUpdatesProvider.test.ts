@@ -22,6 +22,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
         entityId: "issue-1",
         details: null,
       },
+      () => {},
     );
 
     expect(invalidations).toContainEqual({

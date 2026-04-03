@@ -14,6 +14,12 @@ import { useLocation } from "../lib/router";
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
 const RECONNECT_SUPPRESS_MS = 2000;
+const HOT_ACTIVITY_INVALIDATION_MS = 5_000;
+const HOT_HEARTBEATS_INVALIDATION_MS = 5_000;
+const HOT_AGENTS_INVALIDATION_MS = 10_000;
+const HOT_DASHBOARD_INVALIDATION_MS = 15_000;
+const HOT_SIDEBAR_BADGES_INVALIDATION_MS = 15_000;
+const HOT_COSTS_INVALIDATION_MS = 30_000;
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
@@ -409,6 +415,22 @@ function buildAgentStatusToast(
   };
 }
 
+type InvalidateFn = (queryKey: readonly unknown[], minIntervalMs: number) => void;
+
+function invalidateQueryThrottled(
+  queryClient: QueryClient,
+  gate: Map<string, number>,
+  queryKey: readonly unknown[],
+  minIntervalMs: number,
+) {
+  const now = Date.now();
+  const gateKey = JSON.stringify(queryKey);
+  const lastAt = gate.get(gateKey) ?? 0;
+  if (now - lastAt < minIntervalMs) return;
+  gate.set(gateKey, now);
+  queryClient.invalidateQueries({ queryKey });
+}
+
 function buildRunStatusToast(
   payload: Record<string, unknown>,
   nameOf: (id: string) => string | null,
@@ -450,13 +472,14 @@ function invalidateHeartbeatQueries(
   queryClient: ReturnType<typeof useQueryClient>,
   companyId: string,
   payload: Record<string, unknown>,
+  invalidateThrottled: InvalidateFn,
 ) {
-  queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  invalidateThrottled(queryKeys.liveRuns(companyId), HOT_HEARTBEATS_INVALIDATION_MS);
+  invalidateThrottled(queryKeys.heartbeats(companyId), HOT_HEARTBEATS_INVALIDATION_MS);
+  invalidateThrottled(queryKeys.agents.list(companyId), HOT_AGENTS_INVALIDATION_MS);
+  invalidateThrottled(queryKeys.dashboard(companyId), HOT_DASHBOARD_INVALIDATION_MS);
+  invalidateThrottled(queryKeys.costs(companyId), HOT_COSTS_INVALIDATION_MS);
+  invalidateThrottled(queryKeys.sidebarBadges(companyId), HOT_SIDEBAR_BADGES_INVALIDATION_MS);
 
   const agentId = readString(payload.agentId);
   if (agentId) {
@@ -469,10 +492,11 @@ function invalidateActivityQueries(
   queryClient: ReturnType<typeof useQueryClient>,
   companyId: string,
   payload: Record<string, unknown>,
+  invalidateThrottled: InvalidateFn,
 ) {
-  queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  invalidateThrottled(queryKeys.activity(companyId), HOT_ACTIVITY_INVALIDATION_MS);
+  invalidateThrottled(queryKeys.dashboard(companyId), HOT_DASHBOARD_INVALIDATION_MS);
+  invalidateThrottled(queryKeys.sidebarBadges(companyId), HOT_SIDEBAR_BADGES_INVALIDATION_MS);
 
   const entityType = readString(payload.entityType);
   const entityId = readString(payload.entityId);
@@ -593,6 +617,7 @@ function handleLiveEvent(
   event: LiveEvent,
   pushToast: (toast: ToastInput) => string | null,
   gate: ToastGate,
+  invalidateGate: Map<string, number>,
   currentActor: { userId: string | null; agentId: string | null },
 ) {
   if (event.companyId !== expectedCompanyId) return;
@@ -604,7 +629,7 @@ function handleLiveEvent(
   }
 
   if (event.type === "heartbeat.run.queued" || event.type === "heartbeat.run.status") {
-    invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
+    invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload, (queryKey, minIntervalMs) => invalidateQueryThrottled(queryClient, invalidateGate, queryKey, minIntervalMs));
     if (event.type === "heartbeat.run.status") {
       const toast = buildRunStatusToast(payload, nameOf);
       if (
@@ -622,9 +647,9 @@ function handleLiveEvent(
   }
 
   if (event.type === "agent.status") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(expectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(expectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.org(expectedCompanyId) });
+    invalidateQueryThrottled(queryClient, invalidateGate, queryKeys.agents.list(expectedCompanyId), HOT_AGENTS_INVALIDATION_MS);
+    invalidateQueryThrottled(queryClient, invalidateGate, queryKeys.dashboard(expectedCompanyId), HOT_DASHBOARD_INVALIDATION_MS);
+    invalidateQueryThrottled(queryClient, invalidateGate, queryKeys.org(expectedCompanyId), HOT_AGENTS_INVALIDATION_MS);
     const agentId = readString(payload.agentId);
     if (agentId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
     const toast = buildAgentStatusToast(payload, nameOf, queryClient, expectedCompanyId);
@@ -638,7 +663,7 @@ function handleLiveEvent(
   }
 
   if (event.type === "activity.logged") {
-    invalidateActivityQueries(queryClient, expectedCompanyId, payload);
+    invalidateActivityQueries(queryClient, expectedCompanyId, payload, (queryKey, minIntervalMs) => invalidateQueryThrottled(queryClient, invalidateGate, queryKey, minIntervalMs));
     const action = readString(payload.action);
     const toast =
       buildActivityToast(queryClient, expectedCompanyId, payload, currentActor) ??
@@ -665,6 +690,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { pushToast } = useToast();
   const location = useLocation();
   const gateRef = useRef<ToastGate>({ cooldownHits: new Map(), suppressUntil: 0 });
+  const invalidateGateRef = useRef<Map<string, number>>(new Map());
   const pathnameRef = useRef(location.pathname);
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -721,7 +747,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
         try {
           const parsed = JSON.parse(raw) as LiveEvent;
-          handleLiveEvent(queryClient, selectedCompanyId, pathnameRef.current, parsed, pushToast, gateRef.current, {
+          handleLiveEvent(queryClient, selectedCompanyId, pathnameRef.current, parsed, pushToast, gateRef.current, invalidateGateRef.current, {
             userId: currentUserId,
             agentId: null,
           });

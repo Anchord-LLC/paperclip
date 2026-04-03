@@ -17,6 +17,13 @@ export type PolymarketCopySignalDecision = "accepted" | "skipped" | "blocked";
 export type PolymarketCopyPaperTradeStatus = "open" | "closed";
 export type PolymarketCopyDynamicSizingBasis = "current_exposure";
 export type PolymarketCopyKalshiExecutionMode = "disabled" | "dry_run" | "live";
+export type PolymarketCopyKalshiBalanceSource = "primary_account" | "subaccount";
+export type PolymarketCopyKalshiReadinessErrorClass =
+  | "auth_failure"
+  | "signature_failure"
+  | "network_api_failure"
+  | "missing_subaccount"
+  | "malformed_response";
 export type PolymarketAuthEnvKey =
   | "POLYMARKET_PRIVATE_KEY"
   | "POLYMARKET_API_KEY"
@@ -447,6 +454,12 @@ export interface PolymarketCopyKalshiReadiness {
   positionsReachable: boolean;
   signalSourceActive: boolean;
   marketMatchQualityAvailable: boolean;
+  walletBalanceUsd: number | null;
+  portfolioValueUsd: number | null;
+  lastSuccessfulBalanceSyncAt: Date | null;
+  balanceSource: PolymarketCopyKalshiBalanceSource | null;
+  balanceErrorClass: PolymarketCopyKalshiReadinessErrorClass | null;
+  balanceErrorDetail: string | null;
   keyStatuses: Record<PolymarketKalshiEnvKey, PolymarketCopyAuthKeyStatus>;
   reasonCodes: string[];
   summary: string;
