@@ -51,6 +51,7 @@ import {
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { generateHeartbeatRunCandidateSkills } from "./heartbeat-post-run-candidates.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
 import {
   hasSessionCompactionThresholds,
@@ -2695,6 +2696,44 @@ export function heartbeatService(db: Db) {
       }
 
       if (finalizedRun) {
+        if (outcome === "succeeded") {
+          try {
+            const candidateGeneration = await generateHeartbeatRunCandidateSkills(db, {
+              companyId: agent.companyId,
+              agentId: agent.id,
+              agentRole: agent.role,
+              runId: finalizedRun.id,
+              issueId,
+              resultJson: finalizedRun.resultJson,
+            });
+
+            if (candidateGeneration.created.length > 0) {
+              await appendRunEvent(finalizedRun, seq++, {
+                eventType: "memory.candidate",
+                stream: "system",
+                level: "info",
+                message:
+                  `generated ${candidateGeneration.created.length} candidate skill proposal`
+                  + (candidateGeneration.created.length === 1 ? "" : "s"),
+                payload: {
+                  roleFamily: agent.role,
+                  stateKeys: candidateGeneration.created.map((snippet) => snippet.stateKey),
+                },
+              });
+            }
+          } catch (candidateError) {
+            logger.warn(
+              {
+                runId: finalizedRun.id,
+                agentId: agent.id,
+                companyId: agent.companyId,
+                error: candidateError instanceof Error ? candidateError.message : String(candidateError),
+              },
+              "post-run candidate generation failed",
+            );
+          }
+        }
+
         await updateRuntimeState(agent, finalizedRun, adapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
