@@ -3,6 +3,14 @@ import type { PluginStateScopeKind } from "../constants.js";
 export type MemoryBindingStatus = "active" | "disabled";
 export type MemoryScopeKind = PluginStateScopeKind;
 export type MemoryActorType = "agent" | "user" | "system";
+export type OperationalMemoryKind =
+  | "fact"
+  | "standard"
+  | "decision"
+  | "todo"
+  | "quality_rule"
+  | "routing_preference";
+export type OperationalMemoryStatus = "candidate" | "approved" | "archived";
 
 export interface MemoryProviderCapabilities {
   write?: boolean;
@@ -103,11 +111,16 @@ export interface MemorySnippet {
   handle: MemoryRecordHandle;
   stateKey: string;
   text: string;
+  kind: OperationalMemoryKind;
+  status: OperationalMemoryStatus;
   scopeKind: MemoryScopeKind;
   scopeId: string | null;
   namespace: string;
   score?: number;
   metadata?: Record<string, unknown>;
+  proposedAt: Date;
+  approvedAt: Date | null;
+  archivedAt: Date | null;
   updatedAt: Date;
 }
 
@@ -119,7 +132,33 @@ export interface MemoryWriteRequest {
   namespace?: string;
   stateKey: string;
   content: string;
+  kind?: OperationalMemoryKind;
   metadata?: Record<string, unknown>;
+  actorType: MemoryActorType;
+  actorId?: string | null;
+}
+
+export interface MemoryProposeRequest {
+  companyId: string;
+  bindingKey: string;
+  scopeKind: MemoryScopeKind;
+  scopeId?: string | null;
+  namespace?: string;
+  stateKey: string;
+  kind: OperationalMemoryKind;
+  content: string;
+  metadata?: Record<string, unknown>;
+  actorType: MemoryActorType;
+  actorId?: string | null;
+}
+
+export interface MemoryStatusChangeRequest {
+  companyId: string;
+  bindingKey: string;
+  scopeKind: MemoryScopeKind;
+  scopeId?: string | null;
+  namespace?: string;
+  stateKey: string;
   actorType: MemoryActorType;
   actorId?: string | null;
 }
@@ -143,6 +182,8 @@ export interface MemoryQueryRequest {
   namespace?: string;
   query: string;
   limit?: number;
+  includeCandidate?: boolean;
+  includeArchived?: boolean;
   actorType: MemoryActorType;
   actorId?: string | null;
 }

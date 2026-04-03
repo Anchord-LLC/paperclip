@@ -271,4 +271,146 @@ describeDatabaseBacked("memoryService", () => {
     ]);
     expect(operations.every((operation) => operation.status === "success")).toBe(true);
   });
+
+  it("proposes, approves, archives, and safely queries operational memory", async () => {
+    const companyId = randomUUID();
+    companyIdsToCleanup.push(companyId);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const binding = await svc.createBinding({
+      companyId,
+      bindingKey: "default",
+      label: "Default Memory",
+      providerKey: "local",
+      namespace: "memory",
+      capabilities: { read: true, query: true, write: true },
+    });
+
+    expect(binding).toBeTruthy();
+
+    const proposed = await svc.proposeMemory({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      namespace: "memory",
+      stateKey: "security-routing",
+      kind: "routing_preference",
+      content: "Route security incidents to on-call ops before general support triage.",
+      metadata: { source: "incident-retro" },
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(proposed.status).toBe("candidate");
+    expect(proposed.kind).toBe("routing_preference");
+
+    const defaultQueryBeforeApproval = await svc.queryMemory({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      namespace: "memory",
+      query: "security ops",
+      limit: 5,
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(defaultQueryBeforeApproval.snippets).toHaveLength(0);
+
+    const candidateQuery = await svc.queryMemory({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      namespace: "memory",
+      query: "security ops",
+      limit: 5,
+      includeCandidate: true,
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(candidateQuery.snippets).toHaveLength(1);
+    expect(candidateQuery.snippets[0]?.status).toBe("candidate");
+    expect(candidateQuery.snippets[0]?.kind).toBe("routing_preference");
+
+    const approved = await svc.approveMemory({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      namespace: "memory",
+      stateKey: "security-routing",
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(approved.status).toBe("approved");
+    expect(approved.approvedAt).toBeTruthy();
+
+    const defaultQueryAfterApproval = await svc.queryMemory({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      namespace: "memory",
+      query: "security ops",
+      limit: 5,
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(defaultQueryAfterApproval.snippets).toHaveLength(1);
+    expect(defaultQueryAfterApproval.snippets[0]?.status).toBe("approved");
+    expect(defaultQueryAfterApproval.snippets[0]?.stateKey).toBe("security-routing");
+
+    const archived = await svc.archiveMemory({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      namespace: "memory",
+      stateKey: "security-routing",
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(archived.status).toBe("archived");
+    expect(archived.archivedAt).toBeTruthy();
+
+    const defaultQueryAfterArchive = await svc.queryMemory({
+      companyId,
+      bindingKey: "default",
+      scopeKind: "company",
+      scopeId: companyId,
+      namespace: "memory",
+      query: "security ops",
+      limit: 5,
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(defaultQueryAfterArchive.snippets).toHaveLength(0);
+
+    const operations = await svc.listRecentOperations({
+      companyId,
+      bindingId: binding!.id,
+      limit: 20,
+    });
+
+    expect(operations).toHaveLength(7);
+    expect(operations.every((operation) => operation.status === "success")).toBe(true);
+    expect(operations.filter((operation) => operation.operationType === "propose")).toHaveLength(1);
+    expect(operations.filter((operation) => operation.operationType === "approve")).toHaveLength(1);
+    expect(operations.filter((operation) => operation.operationType === "archive")).toHaveLength(1);
+    expect(operations.filter((operation) => operation.operationType === "query")).toHaveLength(4);
+  });
 });

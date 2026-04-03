@@ -95,6 +95,8 @@ export type {
   MemoryBinding,
   MemoryBindingStatus,
   MemoryOperation,
+  OperationalMemoryKind,
+  OperationalMemoryStatus,
   MemoryScopeKind,
   ResolveMemoryBindingInput,
   CreateMemoryBindingInput,
@@ -104,6 +106,8 @@ export type {
   MemoryRecordHandle,
   MemorySnippet,
   MemoryWriteRequest,
+  MemoryProposeRequest,
+  MemoryStatusChangeRequest,
   MemoryReadRequest,
   MemoryQueryRequest,
   MemoryQueryResult,
@@ -148,30 +152,6 @@ export type {
 } from "./heartbeat.js";
 export type { LiveEvent } from "./live.js";
 export type { DashboardSummary } from "./dashboard.js";
-export type {
-  PolymarketCopyMode,
-  PolymarketCopyCadence,
-  PolymarketCopyWorkerKey,
-  PolymarketCopyWalletStatus,
-  PolymarketCopyRunStatus,
-  PolymarketCopySignalAction,
-  PolymarketCopySignalDecision,
-  PolymarketCopyPaperTradeStatus,
-  PolymarketCopyRuntimeConfig,
-  PatchPolymarketCopyRuntimeConfig,
-  PolymarketCopyWalletComponentScores,
-  PolymarketCopyWalletSelectionRun,
-  PolymarketCopyWalletCandidate,
-  PolymarketCopyWatchedWallet,
-  PolymarketCopyWorkerRun,
-  PolymarketCopySignal,
-  PolymarketCopySignalDecisionRecord,
-  PolymarketCopyPaperTrade,
-  PolymarketCopyPaperTradeEvent,
-  PolymarketCopyDashboardOverview,
-  PolymarketCopyRiskSummary,
-  PolymarketCopyDashboardData,
-} from "./polymarket-copy.js";
 export type { ActivityEvent } from "./activity.js";
 export type { SidebarBadges } from "./sidebar-badges.js";
 export type {

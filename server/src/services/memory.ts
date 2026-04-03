@@ -7,12 +7,16 @@ import type {
   LogMemoryOperationInput,
   MemoryBinding,
   MemoryOperation,
+  MemoryProposeRequest,
   MemoryProviderCapabilities,
   MemoryQueryRequest,
   MemoryQueryResult,
   MemoryReadRequest,
   MemorySnippet,
+  MemoryStatusChangeRequest,
   MemoryWriteRequest,
+  OperationalMemoryKind,
+  OperationalMemoryStatus,
   PaperclipPluginManifestV1,
   ResolveMemoryBindingInput,
   UpdateMemoryBindingStatusInput,
@@ -26,7 +30,7 @@ const LOCAL_MEMORY_PLUGIN_MANIFEST: PaperclipPluginManifestV1 = {
   apiVersion: 1,
   version: "0.0.0",
   displayName: "Paperclip Local Memory",
-  description: "Built-in local memory backing for Paperclip Memory V1.",
+  description: "Built-in local memory backing for Paperclip Memory V2.",
   author: "Paperclip",
   categories: ["automation"],
   capabilities: [],
@@ -35,10 +39,37 @@ const LOCAL_MEMORY_PLUGIN_MANIFEST: PaperclipPluginManifestV1 = {
   },
 };
 
+const OPERATIONAL_MEMORY_KINDS = new Set<OperationalMemoryKind>([
+  "fact",
+  "standard",
+  "decision",
+  "todo",
+  "quality_rule",
+  "routing_preference",
+]);
+
+const OPERATIONAL_MEMORY_STATUSES = new Set<OperationalMemoryStatus>([
+  "candidate",
+  "approved",
+  "archived",
+]);
+
 type LocalMemoryValue = {
   text: string;
   metadata: Record<string, unknown>;
+  kind: OperationalMemoryKind;
+  status: OperationalMemoryStatus;
+  proposedAt: string;
+  approvedAt: string | null;
+  archivedAt: string | null;
   updatedAt: string;
+};
+
+type ProviderWriteInput = MemoryWriteRequest & {
+  status?: OperationalMemoryStatus;
+  proposedAt?: Date | null;
+  approvedAt?: Date | null;
+  archivedAt?: Date | null;
 };
 
 type ProviderWriteResult = {
@@ -58,9 +89,21 @@ type ProviderQueryResult = MemoryQueryResult & {
 interface MemoryProvider {
   key: string;
   capabilities: MemoryProviderCapabilities;
-  write(binding: MemoryBinding, input: MemoryWriteRequest): Promise<ProviderWriteResult>;
+  write(binding: MemoryBinding, input: ProviderWriteInput): Promise<ProviderWriteResult>;
   read(binding: MemoryBinding, input: MemoryReadRequest): Promise<ProviderReadResult>;
   query(binding: MemoryBinding, input: MemoryQueryRequest): Promise<ProviderQueryResult>;
+}
+
+function isOperationalMemoryKind(value: unknown): value is OperationalMemoryKind {
+  return typeof value === "string" && OPERATIONAL_MEMORY_KINDS.has(value as OperationalMemoryKind);
+}
+
+function isOperationalMemoryStatus(value: unknown): value is OperationalMemoryStatus {
+  return typeof value === "string" && OPERATIONAL_MEMORY_STATUSES.has(value as OperationalMemoryStatus);
+}
+
+function normalizeMetadata(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
 function normalizeScopeId(companyId: string, scopeKind: string, scopeId?: string | null): string | null {
@@ -76,27 +119,91 @@ function toStorageNamespace(companyId: string, namespace: string): string {
   return `paperclip-memory:${companyId}:${namespace}`;
 }
 
+function coerceDate(value: Date | string | null | undefined, fallback: Date | null): Date | null {
+  if (value instanceof Date) return value;
+  if (typeof value === "string") {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return fallback;
+}
+
+function toIsoString(value: Date | null): string | null {
+  return value ? value.toISOString() : null;
+}
+
+function buildLocalMemoryValue(input: ProviderWriteInput, updatedAt: Date): LocalMemoryValue {
+  const kind = input.kind ?? "fact";
+  const status = input.status ?? "approved";
+  const proposedAt = coerceDate(input.proposedAt, updatedAt) ?? updatedAt;
+
+  const approvedAt = status === "candidate"
+    ? null
+    : status === "approved"
+      ? coerceDate(input.approvedAt, updatedAt) ?? updatedAt
+      : coerceDate(input.approvedAt, null);
+
+  const archivedAt = status === "archived"
+    ? coerceDate(input.archivedAt, updatedAt) ?? updatedAt
+    : null;
+
+  return {
+    text: input.content,
+    metadata: normalizeMetadata(input.metadata),
+    kind,
+    status,
+    proposedAt: toIsoString(proposedAt) ?? updatedAt.toISOString(),
+    approvedAt: toIsoString(approvedAt),
+    archivedAt: toIsoString(archivedAt),
+    updatedAt: updatedAt.toISOString(),
+  };
+}
+
 function parseLocalMemoryValue(value: unknown): LocalMemoryValue | null {
   if (!value || typeof value !== "object") return null;
+
   const record = value as Record<string, unknown>;
   if (typeof record.text !== "string") return null;
 
+  const updatedAt = typeof record.updatedAt === "string" ? record.updatedAt : new Date().toISOString();
+  const kind = isOperationalMemoryKind(record.kind) ? record.kind : "fact";
+  const status = isOperationalMemoryStatus(record.status) ? record.status : "approved";
+  const proposedAt = typeof record.proposedAt === "string" ? record.proposedAt : updatedAt;
+  const approvedAt = typeof record.approvedAt === "string"
+    ? record.approvedAt
+    : status === "approved"
+      ? updatedAt
+      : null;
+  const archivedAt = typeof record.archivedAt === "string"
+    ? record.archivedAt
+    : status === "archived"
+      ? updatedAt
+      : null;
+
   return {
     text: record.text,
-    metadata: record.metadata && typeof record.metadata === "object"
-      ? record.metadata as Record<string, unknown>
-      : {},
-    updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : new Date().toISOString(),
+    metadata: normalizeMetadata(record.metadata),
+    kind,
+    status,
+    proposedAt,
+    approvedAt,
+    archivedAt,
+    updatedAt,
   };
 }
 
 function buildSnippet(binding: MemoryBinding, input: {
   stateKey: string;
   text: string;
+  kind: OperationalMemoryKind;
+  status: OperationalMemoryStatus;
   scopeKind: string;
   scopeId: string | null;
   namespace: string;
   metadata?: Record<string, unknown>;
+  proposedAt: Date;
+  approvedAt: Date | null;
+  archivedAt: Date | null;
   updatedAt: Date;
   score?: number;
 }): MemorySnippet {
@@ -107,10 +214,15 @@ function buildSnippet(binding: MemoryBinding, input: {
     },
     stateKey: input.stateKey,
     text: input.text,
+    kind: input.kind,
+    status: input.status,
     scopeKind: input.scopeKind as MemorySnippet["scopeKind"],
     scopeId: input.scopeId,
     namespace: input.namespace,
     metadata: input.metadata ?? {},
+    proposedAt: input.proposedAt,
+    approvedAt: input.approvedAt,
+    archivedAt: input.archivedAt,
     updatedAt: input.updatedAt,
     score: input.score,
   };
@@ -135,6 +247,13 @@ function scoreSnippet(query: string, stateKey: string, text: string): number {
   }
 
   return score;
+}
+
+function isSnippetVisibleInQuery(snippet: MemorySnippet, input: MemoryQueryRequest): boolean {
+  if (snippet.status === "approved") return true;
+  if (snippet.status === "candidate") return Boolean(input.includeCandidate);
+  if (snippet.status === "archived") return Boolean(input.includeArchived);
+  return false;
 }
 
 export function memoryService(db: Db) {
@@ -193,27 +312,29 @@ export function memoryService(db: Db) {
       const scopeId = normalizeScopeId(binding.companyId, input.scopeKind, input.scopeId);
       const namespace = normalizeNamespace(binding, input.namespace);
       const updatedAt = new Date();
+      const value = buildLocalMemoryValue(input, updatedAt);
 
       await stateStore.set(pluginId, {
         scopeKind: input.scopeKind,
         scopeId: scopeId ?? undefined,
         namespace: toStorageNamespace(binding.companyId, namespace),
         stateKey: input.stateKey,
-        value: {
-          text: input.content,
-          metadata: input.metadata ?? {},
-          updatedAt: updatedAt.toISOString(),
-        } satisfies LocalMemoryValue,
+        value,
       });
 
       return {
         snippet: buildSnippet(binding, {
           stateKey: input.stateKey,
-          text: input.content,
+          text: value.text,
+          kind: value.kind,
+          status: value.status,
           scopeKind: input.scopeKind,
           scopeId,
           namespace,
-          metadata: input.metadata ?? {},
+          metadata: value.metadata,
+          proposedAt: new Date(value.proposedAt),
+          approvedAt: value.approvedAt ? new Date(value.approvedAt) : null,
+          archivedAt: value.archivedAt ? new Date(value.archivedAt) : null,
           updatedAt,
         }),
       };
@@ -237,10 +358,15 @@ export function memoryService(db: Db) {
         snippet: buildSnippet(binding, {
           stateKey: input.stateKey,
           text: parsed.text,
+          kind: parsed.kind,
+          status: parsed.status,
           scopeKind: input.scopeKind,
           scopeId,
           namespace,
           metadata: parsed.metadata,
+          proposedAt: new Date(parsed.proposedAt),
+          approvedAt: parsed.approvedAt ? new Date(parsed.approvedAt) : null,
+          archivedAt: parsed.archivedAt ? new Date(parsed.archivedAt) : null,
           updatedAt: new Date(parsed.updatedAt),
         }),
       };
@@ -260,16 +386,22 @@ export function memoryService(db: Db) {
         .map((row) => {
           const parsed = parseLocalMemoryValue(row.valueJson);
           if (!parsed) return null;
+
           const score = scoreSnippet(input.query, row.stateKey, parsed.text);
           if (input.query.trim().length > 0 && score <= 0) return null;
 
           return buildSnippet(binding, {
             stateKey: row.stateKey,
             text: parsed.text,
+            kind: parsed.kind,
+            status: parsed.status,
             scopeKind: row.scopeKind,
             scopeId: row.scopeId,
             namespace,
             metadata: parsed.metadata,
+            proposedAt: new Date(parsed.proposedAt),
+            approvedAt: parsed.approvedAt ? new Date(parsed.approvedAt) : null,
+            archivedAt: parsed.archivedAt ? new Date(parsed.archivedAt) : null,
             updatedAt: new Date(parsed.updatedAt),
             score,
           });
@@ -279,8 +411,7 @@ export function memoryService(db: Db) {
           const scoreDelta = (right.score ?? 0) - (left.score ?? 0);
           if (scoreDelta !== 0) return scoreDelta;
           return right.updatedAt.getTime() - left.updatedAt.getTime();
-        })
-        .slice(0, input.limit ?? 10);
+        });
 
       return { snippets };
     },
@@ -304,6 +435,18 @@ export function memoryService(db: Db) {
       throw new Error(`Memory binding not found: ${bindingKey}`);
     }
     return binding;
+  }
+
+  async function readExistingMemory(
+    binding: MemoryBinding,
+    provider: MemoryProvider,
+    input: MemoryStatusChangeRequest,
+  ): Promise<MemorySnippet> {
+    const result = await provider.read(binding, input);
+    if (!result.snippet) {
+      throw new Error(`Memory not found: ${input.stateKey}`);
+    }
+    return result.snippet;
   }
 
   async function logExecution<T>(params: {
@@ -506,16 +649,177 @@ export function memoryService(db: Db) {
           scopeId,
           namespace,
           stateKey: input.stateKey,
+          kind: input.kind ?? "fact",
           content: input.content,
           metadata: input.metadata ?? {},
         },
         action: async () => {
-          const result = await provider.write(binding, input);
+          const result = await provider.write(binding, {
+            ...input,
+            status: "approved",
+          });
           return {
             result: result.snippet,
             response: {
               stateKey: result.snippet.stateKey,
+              kind: result.snippet.kind,
+              status: result.snippet.status,
               providerRecordId: result.snippet.handle.providerRecordId,
+            },
+            usage: result.usage,
+          };
+        },
+      });
+    },
+
+    async proposeMemory(input: MemoryProposeRequest): Promise<MemorySnippet> {
+      const binding = await resolveActiveBinding(input.companyId, input.bindingKey);
+      const provider = await getProvider(binding);
+      const scopeId = normalizeScopeId(binding.companyId, input.scopeKind, input.scopeId);
+      const namespace = normalizeNamespace(binding, input.namespace);
+
+      return logExecution({
+        binding,
+        operationType: "propose",
+        scopeKind: input.scopeKind,
+        scopeId,
+        namespace,
+        stateKey: input.stateKey,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        request: {
+          bindingKey: input.bindingKey,
+          scopeKind: input.scopeKind,
+          scopeId,
+          namespace,
+          stateKey: input.stateKey,
+          kind: input.kind,
+          content: input.content,
+          metadata: input.metadata ?? {},
+        },
+        action: async () => {
+          const result = await provider.write(binding, {
+            ...input,
+            status: "candidate",
+          });
+          return {
+            result: result.snippet,
+            response: {
+              stateKey: result.snippet.stateKey,
+              kind: result.snippet.kind,
+              status: result.snippet.status,
+              providerRecordId: result.snippet.handle.providerRecordId,
+            },
+            usage: result.usage,
+          };
+        },
+      });
+    },
+
+    async approveMemory(input: MemoryStatusChangeRequest): Promise<MemorySnippet> {
+      const binding = await resolveActiveBinding(input.companyId, input.bindingKey);
+      const provider = await getProvider(binding);
+      const scopeId = normalizeScopeId(binding.companyId, input.scopeKind, input.scopeId);
+      const namespace = normalizeNamespace(binding, input.namespace);
+
+      return logExecution({
+        binding,
+        operationType: "approve",
+        scopeKind: input.scopeKind,
+        scopeId,
+        namespace,
+        stateKey: input.stateKey,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        request: {
+          bindingKey: input.bindingKey,
+          scopeKind: input.scopeKind,
+          scopeId,
+          namespace,
+          stateKey: input.stateKey,
+        },
+        action: async () => {
+          const existing = await readExistingMemory(binding, provider, input);
+          if (existing.status === "archived") {
+            throw new Error(`Archived memory cannot be approved: ${input.stateKey}`);
+          }
+
+          const result = await provider.write(binding, {
+            ...input,
+            content: existing.text,
+            kind: existing.kind,
+            metadata: existing.metadata ?? {},
+            status: "approved",
+            proposedAt: existing.proposedAt,
+            approvedAt: existing.approvedAt ?? new Date(),
+          });
+
+          return {
+            result: result.snippet,
+            response: {
+              stateKey: result.snippet.stateKey,
+              kind: result.snippet.kind,
+              status: result.snippet.status,
+            },
+            usage: result.usage,
+          };
+        },
+      });
+    },
+
+    async archiveMemory(input: MemoryStatusChangeRequest): Promise<MemorySnippet> {
+      const binding = await resolveActiveBinding(input.companyId, input.bindingKey);
+      const provider = await getProvider(binding);
+      const scopeId = normalizeScopeId(binding.companyId, input.scopeKind, input.scopeId);
+      const namespace = normalizeNamespace(binding, input.namespace);
+
+      return logExecution({
+        binding,
+        operationType: "archive",
+        scopeKind: input.scopeKind,
+        scopeId,
+        namespace,
+        stateKey: input.stateKey,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        request: {
+          bindingKey: input.bindingKey,
+          scopeKind: input.scopeKind,
+          scopeId,
+          namespace,
+          stateKey: input.stateKey,
+        },
+        action: async () => {
+          const existing = await readExistingMemory(binding, provider, input);
+
+          if (existing.status === "archived") {
+            return {
+              result: existing,
+              response: {
+                stateKey: existing.stateKey,
+                kind: existing.kind,
+                status: existing.status,
+              },
+            };
+          }
+
+          const result = await provider.write(binding, {
+            ...input,
+            content: existing.text,
+            kind: existing.kind,
+            metadata: existing.metadata ?? {},
+            status: "archived",
+            proposedAt: existing.proposedAt,
+            approvedAt: existing.approvedAt,
+            archivedAt: existing.archivedAt ?? new Date(),
+          });
+
+          return {
+            result: result.snippet,
+            response: {
+              stateKey: result.snippet.stateKey,
+              kind: result.snippet.kind,
+              status: result.snippet.status,
             },
             usage: result.usage,
           };
@@ -552,6 +856,7 @@ export function memoryService(db: Db) {
             response: {
               found: Boolean(result.snippet),
               stateKey: result.snippet?.stateKey ?? input.stateKey,
+              status: result.snippet?.status ?? null,
             },
             usage: result.usage,
           };
@@ -580,16 +885,26 @@ export function memoryService(db: Db) {
           namespace,
           query: input.query,
           limit: input.limit ?? 10,
+          includeCandidate: input.includeCandidate ?? false,
+          includeArchived: input.includeArchived ?? false,
         },
         action: async () => {
-          const result = await provider.query(binding, input);
+          const providerResult = await provider.query(binding, input);
+          const result = {
+            ...providerResult,
+            snippets: providerResult.snippets
+              .filter((snippet) => isSnippetVisibleInQuery(snippet, input))
+              .slice(0, input.limit ?? 10),
+          };
+
           return {
             result,
             response: {
               hits: result.snippets.length,
               stateKeys: result.snippets.map((snippet) => snippet.stateKey),
+              statuses: result.snippets.map((snippet) => snippet.status),
             },
-            usage: result.usage,
+            usage: providerResult.usage,
           };
         },
       });
