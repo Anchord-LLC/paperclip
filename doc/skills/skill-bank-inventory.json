@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-04-03T18:12:35+00:00",
+  "generatedAt": "2026-04-03T18:36:11+00:00",
   "repoRoot": "/home/craig/paperclip/repo",
   "inventoryPath": "doc/skills/skill-bank-inventory.json",
   "reportPath": "doc/skills/skill-bank-health-report.md",
@@ -49,9 +49,9 @@
   },
   "summary": {
     "total": 12,
-    "pass": 8,
+    "pass": 12,
     "warn": 0,
-    "fail": 4
+    "fail": 0
   },
   "overlaps": [],
   "skills": [
@@ -59,82 +59,70 @@
       "path": "skills/paperclip/SKILL.md",
       "name": "paperclip",
       "title": "Paperclip Skill",
-      "roleFamily": null,
-      "status": "fail",
+      "roleFamily": "general",
+      "status": "pass",
       "hasRoutingDescription": true,
-      "requiredSectionCount": 15,
-      "requiredSectionsPresent": [],
-      "validationSourcePresent": false,
-      "retireSectionPresent": false,
-      "errors": [
-        "Missing required frontmatter field `role_family`.",
-        "Missing required frontmatter field `validation_source`.",
-        "Missing required section `## Role Family`.",
-        "Missing required section `## When to Use`.",
-        "Missing required section `## When Not to Use`.",
-        "Missing required section `## Inputs / Context Needed`.",
-        "Missing required section `## Core Rules / Steps`.",
-        "Missing required section `## Constraints / Guardrails`.",
-        "Missing required section `## Validation Source`.",
-        "Missing required section `## Retire / Supersede When`."
+      "requiredSectionCount": 23,
+      "requiredSectionsPresent": [
+        "Role Family",
+        "When to Use",
+        "When Not to Use",
+        "Inputs / Context Needed",
+        "Core Rules / Steps",
+        "Constraints / Guardrails",
+        "Validation Source",
+        "Retire / Supersede When"
       ],
-      "warnings": [
-        "Required section coverage is 0/8."
-      ]
+      "validationSourcePresent": true,
+      "retireSectionPresent": true,
+      "errors": [],
+      "warnings": []
     },
     {
       "path": "skills/paperclip-create-agent/SKILL.md",
       "name": "paperclip-create-agent",
       "title": "Paperclip Create Agent Skill",
-      "roleFamily": null,
-      "status": "fail",
+      "roleFamily": "ceo",
+      "status": "pass",
       "hasRoutingDescription": true,
-      "requiredSectionCount": 3,
-      "requiredSectionsPresent": [],
-      "validationSourcePresent": false,
-      "retireSectionPresent": false,
-      "errors": [
-        "Missing required frontmatter field `role_family`.",
-        "Missing required frontmatter field `validation_source`.",
-        "Missing required section `## Role Family`.",
-        "Missing required section `## When to Use`.",
-        "Missing required section `## When Not to Use`.",
-        "Missing required section `## Inputs / Context Needed`.",
-        "Missing required section `## Core Rules / Steps`.",
-        "Missing required section `## Constraints / Guardrails`.",
-        "Missing required section `## Validation Source`.",
-        "Missing required section `## Retire / Supersede When`."
+      "requiredSectionCount": 11,
+      "requiredSectionsPresent": [
+        "Role Family",
+        "When to Use",
+        "When Not to Use",
+        "Inputs / Context Needed",
+        "Core Rules / Steps",
+        "Constraints / Guardrails",
+        "Validation Source",
+        "Retire / Supersede When"
       ],
-      "warnings": [
-        "Required section coverage is 0/8."
-      ]
+      "validationSourcePresent": true,
+      "retireSectionPresent": true,
+      "errors": [],
+      "warnings": []
     },
     {
       "path": "skills/paperclip-create-plugin/SKILL.md",
       "name": "paperclip-create-plugin",
       "title": "Create a Paperclip Plugin",
-      "roleFamily": null,
-      "status": "fail",
+      "roleFamily": "engineer",
+      "status": "pass",
       "hasRoutingDescription": true,
-      "requiredSectionCount": 6,
-      "requiredSectionsPresent": [],
-      "validationSourcePresent": false,
-      "retireSectionPresent": false,
-      "errors": [
-        "Missing required frontmatter field `role_family`.",
-        "Missing required frontmatter field `validation_source`.",
-        "Missing required section `## Role Family`.",
-        "Missing required section `## When to Use`.",
-        "Missing required section `## When Not to Use`.",
-        "Missing required section `## Inputs / Context Needed`.",
-        "Missing required section `## Core Rules / Steps`.",
-        "Missing required section `## Constraints / Guardrails`.",
-        "Missing required section `## Validation Source`.",
-        "Missing required section `## Retire / Supersede When`."
+      "requiredSectionCount": 14,
+      "requiredSectionsPresent": [
+        "Role Family",
+        "When to Use",
+        "When Not to Use",
+        "Inputs / Context Needed",
+        "Core Rules / Steps",
+        "Constraints / Guardrails",
+        "Validation Source",
+        "Retire / Supersede When"
       ],
-      "warnings": [
-        "Required section coverage is 0/8."
-      ]
+      "validationSourcePresent": true,
+      "retireSectionPresent": true,
+      "errors": [],
+      "warnings": []
     },
     {
       "path": "skills/paperclip-engineer-implementation-checklist/SKILL.md",
@@ -324,28 +312,24 @@
       "path": "skills/para-memory-files/SKILL.md",
       "name": "para-memory-files",
       "title": "PARA Memory Files",
-      "roleFamily": null,
-      "status": "fail",
+      "roleFamily": "general",
+      "status": "pass",
       "hasRoutingDescription": true,
-      "requiredSectionCount": 4,
-      "requiredSectionsPresent": [],
-      "validationSourcePresent": false,
-      "retireSectionPresent": false,
-      "errors": [
-        "Missing required frontmatter field `role_family`.",
-        "Missing required frontmatter field `validation_source`.",
-        "Missing required section `## Role Family`.",
-        "Missing required section `## When to Use`.",
-        "Missing required section `## When Not to Use`.",
-        "Missing required section `## Inputs / Context Needed`.",
-        "Missing required section `## Core Rules / Steps`.",
-        "Missing required section `## Constraints / Guardrails`.",
-        "Missing required section `## Validation Source`.",
-        "Missing required section `## Retire / Supersede When`."
+      "requiredSectionCount": 12,
+      "requiredSectionsPresent": [
+        "Role Family",
+        "When to Use",
+        "When Not to Use",
+        "Inputs / Context Needed",
+        "Core Rules / Steps",
+        "Constraints / Guardrails",
+        "Validation Source",
+        "Retire / Supersede When"
       ],
-      "warnings": [
-        "Required section coverage is 0/8."
-      ]
+      "validationSourcePresent": true,
+      "retireSectionPresent": true,
+      "errors": [],
+      "warnings": []
     }
   ]
 }

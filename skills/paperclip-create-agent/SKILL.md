@@ -4,9 +4,59 @@ description: >
   Create new agents in Paperclip with governance-aware hiring. Use when you need
   to inspect adapter configuration options, compare existing agent configs,
   draft a new agent prompt/config, and submit a hire request.
+role_family: ceo
+validation_source: >
+  Paperclip hiring governance, approval flow, and company-skill assignment
+  workflow as documented in the current create-agent skill and API references.
 ---
 
 # Paperclip Create Agent Skill
+
+## Role Family
+
+`ceo`
+
+## When to Use
+
+- Use when you are explicitly asked to hire or create an agent in Paperclip.
+- Use when a governance-aware hire request needs correct adapter, reporting-line, and approval handling.
+- Use when you need to align desired skills with a new agent on day one.
+
+## When Not to Use
+
+- Do not use for routine agent configuration tweaks that are not a hiring flow.
+- Do not use if you lack board access or explicit `can_create_agents=true` permission.
+- Do not use as a shortcut around the approval process.
+
+## Inputs / Context Needed
+
+- Company and caller identity
+- Target role, title, reporting line, and adapter choice
+- Any source issue or approval context
+- Existing configuration patterns and required day-one skills
+
+## Core Rules / Steps
+
+1. Confirm identity, permissions, and company context.
+2. Inspect current adapter docs, existing agent configs, and icon options.
+3. Draft the hire payload with reporting line, runtime config, and any desired skills.
+4. Submit the hire request and follow the approval path when governance requires it.
+5. Close the loop on linked issues after approval resolves.
+
+## Constraints / Guardrails
+
+- Escalate instead of proceeding if you do not have permission to create agents.
+- Reuse proven configuration patterns instead of inventing unstable defaults.
+- Keep the role prompt, reporting line, and adapter config aligned to the real environment.
+- Treat approval handling as part of the skill, not an optional follow-up.
+
+## Validation Source
+
+- Validated against Paperclip's current agent-hiring flow, approval lifecycle, and company-skills attachment model.
+
+## Retire / Supersede When
+
+- Supersede when Paperclip introduces a narrower role-specific hiring skill for the same governance path.
 
 Use this skill when you are asked to hire/create an agent.
 

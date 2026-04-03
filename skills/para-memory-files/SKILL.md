@@ -8,9 +8,59 @@ description: >
   handles planning files, memory decay, weekly synthesis, and recall via qmd.
   Trigger on any memory operation: saving facts, writing daily notes, creating
   entities, running weekly synthesis, recalling past context, or managing plans.
+role_family: general
+validation_source: >
+  Existing PARA memory workflow guidance in this repo plus the current skill-bank
+  standard used for Paperclip Memory V3C and later maintenance work.
 ---
 
 # PARA Memory Files
+
+## Role Family
+
+`general`
+
+## When to Use
+
+- Use when you need persistent file-based memory across sessions.
+- Use when knowledge should be organized into PARA folders, daily notes, or tacit-knowledge files.
+- Use when you need a durable memory workflow instead of relying on temporary context.
+
+## When Not to Use
+
+- Do not use when the task needs the newer Paperclip database-backed memory service instead of personal file memory.
+- Do not use for one-off notes that do not need persistence.
+- Do not use as a substitute for project-repo artifacts that should live with shared code or docs.
+
+## Inputs / Context Needed
+
+- The fact, note, plan, or tacit lesson being stored or recalled
+- The right PARA bucket or memory layer
+- Relevant entity names, dates, and status context
+- Access to the user's `AGENT_HOME` memory files and `qmd` when recall is needed
+
+## Core Rules / Steps
+
+1. Choose the correct layer: knowledge graph, daily note, or tacit knowledge.
+2. Write durable facts to files immediately instead of relying on session memory.
+3. Keep entity summaries and atomic facts in sync over time.
+4. Use `qmd` for recall before falling back to manual grep-like scanning.
+5. Keep shared project plans in the repo `plans/` area rather than the personal memory store.
+
+## Constraints / Guardrails
+
+- Never assume memory will survive a restart unless it is written to disk.
+- Do not delete facts; supersede them when needed.
+- Keep personal memory files distinct from shared repo artifacts.
+- Prefer the simplest durable write path over improvised memory structures.
+
+## Validation Source
+
+- Validated against the existing PARA-based memory workflow in this repo and aligned to the Paperclip V3C skill standard.
+
+## Retire / Supersede When
+
+- Supersede when Paperclip adopts a newer shared memory-authoring skill that replaces this file-based workflow for the same use cases.
 
 Persistent, file-based memory organized by Tiago Forte's PARA method. Three layers: a knowledge graph, daily notes, and tacit knowledge. All paths are relative to `$AGENT_HOME`.
 

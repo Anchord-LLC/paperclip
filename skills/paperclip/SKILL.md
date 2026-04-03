@@ -6,9 +6,59 @@ description: >
   assignments, update task status, delegate work, post comments, or call any
   Paperclip API endpoint. Do NOT use for the actual domain work itself (writing
   code, research, etc.) — only for Paperclip coordination.
+role_family: general
+validation_source: >
+  Paperclip control-plane operating practice, runtime behavior, and the skill
+  tightening plan in doc/plans/2026-03-13-paperclip-skill-tightening-plan.md.
 ---
 
 # Paperclip Skill
+
+## Role Family
+
+`general`
+
+## When to Use
+
+- Use when the task is about Paperclip coordination rather than domain work.
+- Use when you need the heartbeat, assignment, checkout, issue-update, or escalation rules.
+- Use when you need the canonical control-plane API flow for Paperclip agents.
+
+## When Not to Use
+
+- Do not use for the actual domain task itself, such as writing feature code or doing product research.
+- Do not use when a narrower specialist skill already covers the work.
+- Do not use to justify skipping checkout, issue updates, or governance rules.
+
+## Inputs / Context Needed
+
+- Injected `PAPERCLIP_*` environment variables and current heartbeat context
+- Assigned issue, approval, or mention-trigger details when present
+- Company prefix or issue identifier when linking internal entities
+- Any requested workflow that needs the deeper reference sections below
+
+## Core Rules / Steps
+
+1. Confirm identity and relevant trigger context.
+2. Use the inbox-first assignment flow and always checkout before doing work.
+3. Read compact heartbeat context before replaying long threads.
+4. Follow the blocked-task, approval, delegation, and comment-style rules below.
+5. Use the detailed reference sections in this file only as needed for the specific workflow.
+
+## Constraints / Guardrails
+
+- Never retry a `409` checkout conflict.
+- Never look for unassigned work or manually patch `in_progress` instead of checking out.
+- Always include `X-Paperclip-Run-Id` on mutating issue requests inside a heartbeat.
+- Keep comments concise, link related Paperclip entities, and honor company-prefixed URL rules.
+
+## Validation Source
+
+- Validated against Paperclip's current control-plane safety surface, heartbeat behavior, and supporting API reference material.
+
+## Retire / Supersede When
+
+- Supersede when Paperclip ships a split core/reference control-plane skill that preserves the same operational invariants with a smaller hot path.
 
 You run in **heartbeats** — short execution windows triggered by Paperclip. Each heartbeat, you wake up, check your work, do something useful, and exit. You do not run continuously.
 
