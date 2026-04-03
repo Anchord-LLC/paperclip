@@ -3,10 +3,10 @@ import type { AgentRole, SkillSnippet } from "@paperclipai/shared";
 import { AGENT_ROLES, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { memoryService } from "./memory.js";
 
-const POST_RUN_CANDIDATE_BINDING_KEY = "default";
+export const POST_RUN_CANDIDATE_BINDING_KEY = "default";
 const POST_RUN_CANDIDATE_MAX_ITEMS = 2;
-const POST_RUN_CANDIDATE_ENABLED_ROLES = new Set<AgentRole>(["qa", "researcher"]);
-const POST_RUN_CANDIDATE_SOURCE_KIND = "heartbeat_run_result";
+export const POST_RUN_CANDIDATE_ENABLED_ROLES = new Set<AgentRole>(["qa", "researcher"]);
+export const POST_RUN_CANDIDATE_SOURCE_KIND = "heartbeat_run_result";
 const POST_RUN_CANDIDATE_MAX_CONTENT_LENGTH = 1200;
 
 type CandidateSkillDraft = {

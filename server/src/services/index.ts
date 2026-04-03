@@ -31,3 +31,4 @@ export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { reconcilePersistedRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
 export { memoryService } from "./memory.js";
+export { postRunSkillReviewService } from "./heartbeat-post-run-review.js";
